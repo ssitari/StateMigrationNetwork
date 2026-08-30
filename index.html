@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>State-to-State Migration Network</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      display: flex;
+      height: 100vh;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      background: #141414;
+      color: #ccc;
+    }
+
+    /* ── Controls panel ── */
+    #controls {
+      width: 240px;
+      flex-shrink: 0;
+      background: #1c1c1c;
+      border-right: 1px solid #2e2e2e;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 14px;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    #controls h1 {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      color: #eee;
+    }
+
+    .control-group { display: flex; flex-direction: column; gap: 6px; }
+    .control-group > label {
+      font-weight: 600;
+      color: #777;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .radio-group { display: flex; flex-direction: column; gap: 5px; }
+    .radio-group label {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 13px; font-weight: 400; color: #bbb;
+      text-transform: none; letter-spacing: 0;
+      cursor: pointer;
+    }
+
+    .slider-row { display: flex; align-items: center; gap: 8px; }
+    input[type=range] { flex: 1; cursor: pointer; accent-color: #4e79a7; min-width: 0; }
+    .slider-val {
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+      color: #999; font-size: 12px; min-width: 3.4em; text-align: right;
+    }
+
+    #year-val { color: #eee; font-weight: 700; font-size: 14px; }
+    #play {
+      border: 1px solid #3a3a3a; background: #252525; color: #ccc;
+      border-radius: 4px; cursor: pointer; padding: 3px 9px;
+      font: inherit; font-size: 12px; flex-shrink: 0;
+    }
+    #play:hover { background: #303030; color: #eee; }
+
+    .hint { font-size: 11px; color: #6a6a6a; line-height: 1.5; }
+
+    /* ── Stats ── */
+    #stats {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid #2e2e2e;
+      font-size: 11px;
+      color: #666;
+      line-height: 1.8;
+    }
+    #stats strong { color: #aaa; }
+
+    /* ── Legend ── */
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── Panels ── */
+    #chart-container, #map-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #map-container { border-left: 1px solid #2e2e2e; }
+    #chart, #map { width: 100%; height: 100%; display: block; }
+
+    .panel-title {
+      position: absolute; top: 10px; left: 12px;
+      font-size: 11px; font-weight: 600; color: #777;
+      text-transform: uppercase; letter-spacing: .05em;
+      pointer-events: none;
+    }
+
+    /* ── Tooltip ── */
+    #tooltip {
+      position: fixed;
+      display: none;
+      background: rgba(0,0,0,.9);
+      color: #eee;
+      padding: 8px 11px;
+      border-radius: 5px;
+      font-size: 12px;
+      line-height: 1.6;
+      pointer-events: none;
+      z-index: 10;
+      max-width: 250px;
+      border: 1px solid #333;
+    }
+    #tooltip strong { font-size: 13px; }
+    #tooltip .warn { color: #e8a33d; }
+    #tooltip .num { font-variant-numeric: tabular-nums; }
+
+    /* ── Loading overlay ── */
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      color: #666;
+      background: #141414;
+    }
+
+    hr { border: none; border-top: 1px solid #2e2e2e; }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <h1>State-to-State Migration<br>Network, 2005–2024</h1>
+
+  <div class="control-group">
+    <label>Year</label>
+    <div class="slider-row">
+      <button id="play" type="button">▶</button>
+      <input type="range" id="year-slider" min="0" value="0">
+      <span class="slider-val" id="year-val">—</span>
+    </div>
+    <div class="hint" id="year-note"></div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Edge weight</label>
+    <div class="radio-group">
+      <label><input type="radio" name="metric" value="share" checked> Share of origin's movers</label>
+      <label><input type="radio" name="metric" value="movers"> Number of movers</label>
+    </div>
+    <div class="hint" id="metric-hint"></div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label id="threshold-label">Min edge share</label>
+    <div class="slider-row">
+      <input type="range" id="threshold-slider" min="0" value="0">
+      <span class="slider-val" id="threshold-val">—</span>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Direction</label>
+    <div class="radio-group">
+      <label><input type="radio" name="mode" value="total" checked> Both directions</label>
+      <label><input type="radio" name="mode" value="out"> Out-migration</label>
+      <label><input type="radio" name="mode" value="in"> In-migration</label>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>
+      <input type="checkbox" id="flag-unreliable" checked style="accent-color:#4e79a7">
+      Fade unreliable edges
+    </label>
+    <div class="hint">Estimates whose 90% margin of error exceeds two-thirds of the estimate itself.</div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Census region</label>
+    <div id="legend"></div>
+  </div>
+
+  <div id="stats">
+    <div>Edges shown: <strong id="stat-edges">—</strong></div>
+    <div>Interstate movers: <strong id="stat-movers">—</strong></div>
+    <div>Suppressed pairs: <strong id="stat-suppressed">—</strong></div>
+  </div>
+</div>
+
+<div id="chart-container">
+  <div id="loading">Loading migration data…</div>
+  <div class="panel-title">Network</div>
+  <svg id="chart"></svg>
+</div>
+
+<div id="map-container">
+  <div class="panel-title">Map</div>
+  <svg id="map"></svg>
+</div>
+
+<div id="tooltip"></div>
+
+<style>
+  /* body is a row flex at 100vh, so a footer cannot be a flex child here
+     without becoming a third column -- it is pinned instead. */
+  .page-credit {
+    position: fixed; right: 0; top: 0; z-index: 50;
+    padding: 4px 10px;
+    font: 11px/1.35 system-ui, sans-serif;
+    color: #8a8a8a; background: rgba(20,20,20,0.88);
+    border-bottom-left-radius: 4px;
+    pointer-events: none;
+  }
+  .page-credit a { color: #b9b9b9; pointer-events: auto; }
+  .page-credit a:hover { color: #e8e8e8; }
+</style>
+<footer class="page-credit">
+  Data:
+  <a href="https://www.census.gov/data/tables/time-series/demo/geographic-mobility/state-to-state-migration.html" rel="noopener" target="_blank">U.S. Census Bureau, ACS State-to-State Migration Flows</a>.
+  Source code and method notes:
+  <a href="https://github.com/ssitari/StateMigrationNetwork" rel="noopener" target="_blank">ssitari/StateMigrationNetwork</a>.
+</footer>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
