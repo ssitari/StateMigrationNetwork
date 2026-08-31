@@ -43,10 +43,14 @@ const mapContainer = document.getElementById('map-container');
 const mapSvg       = d3.select('#map');
 const mapG         = mapSvg.append('g');
 
-// Sequential ramp for "share of a selected state's movers"; diverging ramp for net migration,
-// which is signed and needs a meaningful zero.
-const shareScale = d3.scaleSequential(d3.interpolateYlGnBu);
-const netScale   = d3.scaleDiverging(d3.interpolateRdBu);
+// Five-class schemes rather than continuous ramps, so every colour on the map corresponds to a
+// stated range of values. Same two palettes as before: sequential YlGnBu for "share of a selected
+// state's movers", diverging RdBu for net migration.
+const CLASS_COUNT = 5;
+const SEQ_COLORS  = d3.schemeYlGnBu[CLASS_COUNT];
+// schemeRdBu runs red -> blue, and scaleThreshold assigns its first colour to the most negative
+// class, so this orientation already gives red = losing, blue = gaining. Do not reverse it.
+const DIV_COLORS  = d3.schemeRdBu[CLASS_COUNT];
 
 const tooltip = d3.select('#tooltip');
 
@@ -159,6 +163,30 @@ function netMigration(i) {
   return n.in[y] - n.out[y];
 }
 
+// ── Classification ───────────────────────────────────────────────────────────
+// True quintiles: equal counts of states per class. Appropriate for the selected-state view,
+// where values are unsigned shares or counts and the distribution is heavily right-skewed --
+// equal-interval breaks would put nearly every state in the bottom class.
+function classifyQuantile(values) {
+  const vals = values.filter(v => v != null && !Number.isNaN(v));
+  const scale = d3.scaleQuantile().domain(vals).range(SEQ_COLORS);
+  return { scale, breaks: scale.quantiles(), colors: SEQ_COLORS };
+}
+
+// Net migration is signed and has a meaningful zero, so plain quintiles are the wrong tool: the
+// zero crossing would land at an arbitrary point inside a class, and a state that gained people
+// could be painted the same colour as one that lost them. Instead the breaks are quantiles of the
+// ABSOLUTE values, mirrored around zero. Classes still carry roughly equal counts, but the middle
+// class straddles zero and every boundary is sign-correct.
+function classifyDiverging(values) {
+  const abs = values.map(Math.abs).filter(v => v > 0).sort(d3.ascending);
+  let b1 = d3.quantile(abs, 0.2) || 0;
+  let b2 = d3.quantile(abs, 0.6) || 0;
+  if (!(b2 > b1)) b2 = b1 + Math.max(1, b1);          // degenerate distributions
+  const breaks = [-b2, -b1, b1, b2];
+  return { scale: d3.scaleThreshold().domain(breaks).range(DIV_COLORS), breaks, colors: DIV_COLORS };
+}
+
 // ── Main render ──────────────────────────────────────────────────────────────
 function draw() {
   allLinks = computeLinks();
@@ -248,16 +276,15 @@ function paint() {
   }
 
   let colorOf;
+  const vals = Array.from(values.values());
   if (sel === null) {
-    const extent = d3.max(Array.from(values.values()), Math.abs) || 1;
-    netScale.domain([-extent, 0, extent]);        // red = losing, blue = gaining
-    colorOf = i => netScale(values.get(i) || 0);
-    updateMapLegend(-extent, extent, 'Net migration (in − out)', true);
+    const cls = classifyDiverging(vals);
+    colorOf = i => cls.scale(values.get(i) || 0);
+    updateMapLegend('Net migration (in − out)', cls, netLabel);
   } else {
-    const maxVal = d3.max(Array.from(values.values())) || 1;
-    shareScale.domain([0, maxVal]);
-    colorOf = i => (values.has(i) ? shareScale(values.get(i)) : LAND_COLOR);
-    updateMapLegend(0, maxVal, legendTitle(), false);
+    const cls = classifyQuantile(vals);
+    colorOf = i => (values.has(i) ? cls.scale(values.get(i)) : LAND_COLOR);
+    updateMapLegend(legendTitle(), cls, valueLabel);
   }
 
   const neighbours = sel === null ? null : new Set(values.keys());
@@ -516,49 +543,59 @@ function initMap(geo, data) {
   }
 }
 
-function buildMapLegend() {
-  const defs = mapSvg.append('defs');
-  ['share', 'net'].forEach(kind => {
-    const grad = defs.append('linearGradient').attr('id', `grad-${kind}`);
-    d3.range(0, 1.001, 0.05).forEach(t => {
-      grad.append('stop')
-        .attr('offset', `${(t * 100).toFixed(0)}%`)
-        .attr('stop-color', kind === 'share'
-          ? d3.interpolateYlGnBu(t)
-          : d3.interpolateRdBu(t));           // red = losing, on the left
-    });
-  });
+// A classed map needs a classed legend: one swatch per class with the range it stands for,
+// highest class at the top, rather than a continuous gradient bar.
+const LEGEND_ROW = 15;
 
+const netLabel   = v => (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(Math.round(v)));
+const valueLabel = v => state.metric === 'share' ? pct(v) : fmt(Math.round(v));
+
+function buildMapLegend() {
   const lg = mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
   lg.append('text').attr('class', 'legend-title')
-    .attr('y', -6).attr('fill', '#bbb').attr('font-size', '10px')
+    .attr('y', -8).attr('fill', '#bbb').attr('font-size', '10px')
     .attr('font-weight', '600').style('font-family', 'system-ui, sans-serif');
-  lg.append('rect').attr('class', 'legend-bar').attr('y', 0).attr('height', 8);
-  lg.append('text').attr('class', 'legend-min')
-    .attr('y', 19).attr('fill', '#888').attr('font-size', '9px')
-    .style('font-family', 'system-ui, sans-serif');
-  lg.append('text').attr('class', 'legend-max')
-    .attr('y', 19).attr('text-anchor', 'end').attr('fill', '#888').attr('font-size', '9px')
-    .style('font-family', 'system-ui, sans-serif');
+  lg.append('g').attr('class', 'legend-classes');
   positionMapLegend();
 }
 
 function positionMapLegend() {
   const r = mapContainer.getBoundingClientRect();
-  const lw = Math.min(200, r.width - 24);
-  mapSvg.select('.map-legend').attr('transform', `translate(12, ${r.height - 30})`);
-  mapSvg.select('.legend-bar').attr('width', lw);
-  mapSvg.select('.legend-max').attr('x', lw);
+  mapSvg.select('.map-legend')
+    .attr('transform', `translate(14, ${r.height - CLASS_COUNT * LEGEND_ROW - 14})`);
 }
 
-function updateMapLegend(min, max, title, diverging) {
-  const label = v => state.metric === 'share' && !diverging
-    ? pct(v)
-    : (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(Math.round(v)));
+// Text for class k, given the k-1 lower and k upper break. Open-ended at both extremes, because
+// the outermost classes really are unbounded -- pretending otherwise would misstate the data.
+function classRange(k, breaks, label) {
+  if (k === CLASS_COUNT - 1) return `≥ ${label(breaks[breaks.length - 1])}`;
+  if (k === 0)               return `< ${label(breaks[0])}`;
+  return `${label(breaks[k - 1])} – ${label(breaks[k])}`;
+}
+
+function updateMapLegend(title, cls, label) {
   mapSvg.select('.legend-title').text(title);
-  mapSvg.select('.legend-bar').attr('fill', `url(#grad-${diverging ? 'net' : 'share'})`);
-  mapSvg.select('.legend-min').text(label(min));
-  mapSvg.select('.legend-max').text(label(max));
+
+  // Highest class on top, which is how a choropleth legend is conventionally read.
+  const rows = d3.range(CLASS_COUNT).reverse().map(k => ({
+    color: cls.colors[k],
+    text: classRange(k, cls.breaks, label),
+  }));
+
+  const sel = mapSvg.select('.legend-classes').selectAll('g.legend-class').data(rows);
+  const enter = sel.enter().append('g').attr('class', 'legend-class');
+  enter.append('rect').attr('width', 12).attr('height', 12)
+    .attr('stroke', '#555').attr('stroke-width', 0.5);
+  enter.append('text')
+    .attr('x', 18).attr('y', 10)
+    .attr('fill', '#999').attr('font-size', '9px')
+    .style('font-family', 'system-ui, sans-serif');
+
+  const all = enter.merge(sel);
+  all.attr('transform', (d, i) => `translate(0, ${i * LEGEND_ROW})`);
+  all.select('rect').attr('fill', d => d.color);
+  all.select('text').text(d => d.text);
+  sel.exit().remove();
 }
 
 // ── Legend ───────────────────────────────────────────────────────────────────

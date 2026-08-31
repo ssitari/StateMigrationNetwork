@@ -43,16 +43,33 @@ comparison.
 
 ## Reading the panels
 
-- **No selection** — the map shows **net migration** (arrivals minus departures) on a diverging
-  scale: blue states gained population from other states that year, red states lost it. Network
-  nodes are colored by Census region and sized by total interstate movement.
-- **A state selected** — the map shows that state's relationships on a sequential scale, and the
-  network dims everything not connected to it. The *Direction* control switches between
-  out-migration, in-migration, and both.
+- **No selection** — the map shows **net migration** (arrivals minus departures): blue states
+  gained population from other states that year, red states lost it. Network nodes are colored by
+  Census region and sized by total interstate movement.
+- **A state selected** — the map shows that state's relationships, and the network dims everything
+  not connected to it. The *Direction* control switches between out-migration, in-migration, and
+  both.
 - **Year slider** — steps through the annual estimates; the play button animates them. Watching
   2007–2009 and 2021 in sequence is the point of the time dimension.
 - **Threshold slider** — hides weak edges. At the 3% default the graph carries roughly 350–500
   edges and no state is isolated.
+
+## Map classification
+
+The map uses **five classes** rather than a continuous ramp, so every color on the map stands for
+a stated range of values that the legend names.
+
+The two views are classified differently, deliberately:
+
+- **A state selected** — true **quintiles** (equal counts of states per class). These values are
+  unsigned and heavily right-skewed; equal-interval breaks would drop nearly every state into the
+  bottom class and waste four fifths of the palette.
+- **No selection (net migration)** — quintiles are the *wrong* tool here. Net migration is signed
+  with a meaningful zero, and equal-count breaks would put the zero crossing at an arbitrary point
+  inside a class, so a state that gained people could be painted the same color as one that lost
+  them. Instead the breaks are quantiles of the **absolute** values, mirrored around zero. Classes
+  still carry roughly equal counts (typically 7–14 states each), but the middle class straddles
+  zero and every boundary is sign-correct.
 
 ## Data
 
