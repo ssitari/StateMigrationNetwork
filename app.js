@@ -44,19 +44,45 @@ const mapSvg       = d3.select('#map');
 const mapG         = mapSvg.append('g');
 
 // Five-class schemes rather than continuous ramps, so every colour on the map corresponds to a
-// stated range of values. Same two palettes as before: sequential YlGnBu for "share of a selected
-// state's movers", diverging RdBu for net migration.
+// stated range of values.
+//
+// Both ramps are chosen for a DARK ground, where the rule is the reverse of print: brightness
+// advances and darkness recedes. ColorBrewer's schemes put their palest colour at the class
+// meaning "least" or "no change", which is right on white paper and backwards here -- schemeRdBu
+// midpoint is #f7f7f7, so on a #141414 map the states that did nothing were the loudest thing
+// on screen, and schemeYlGnBu did the same for the smallest shares.
 const CLASS_COUNT = 5;
-const SEQ_COLORS  = d3.schemeYlGnBu[CLASS_COUNT];
-// schemeRdBu runs red -> blue, and scaleThreshold assigns its first colour to the most negative
-// class, so this orientation already gives red = losing, blue = gaining. Do not reverse it.
-const DIV_COLORS  = d3.schemeRdBu[CLASS_COUNT];
+
+// Sequential: viridis is built dark-to-bright and stays monotonic for colourblind readers, so
+// the largest share is the brightest patch and the smallest recedes toward the ground.
+const SEQ_COLORS = d3.quantize(d3.interpolateViridis, CLASS_COUNT);
+
+// Diverging: red = losing, blue = gaining, magnitude carried by brightness away from a neutral
+// that stays quiet. The neutral has to clear two other greys to read as a filled state rather
+// than a hole in the map -- LAND_COLOR #2a2a2a below it and the #444 state stroke above -- so it
+// sits just above the stroke while still being much the darkest of the five classes.
+// scaleThreshold assigns range[0] to the most negative class, so this array runs loss -> gain.
+// Do not reverse it.
+const DIV_COLORS = ['#e2603f', '#96503f', '#4a4a4a', '#3c6a8e', '#4fa8dc'];
 
 const tooltip = d3.select('#tooltip');
 
 function dims() {
   const r = container.getBoundingClientRect();
   return { w: r.width, h: r.height };
+}
+
+// Link distance and charge are tuned for a panel around 700 px on its short side. Left fixed,
+// the graph keeps its full spread in a panel too small to hold it and the outer states are
+// clipped against the edge, so scale the spacing with the panel. The floor stops the layout
+// collapsing into an unreadable knot on a phone.
+const LINK_DISTANCE = 70, CHARGE_STRENGTH = -260, LAYOUT_REFERENCE = 700;
+
+function applyLayoutScale() {
+  const { w, h } = dims();
+  const k = Math.max(0.45, Math.min(1, Math.min(w, h) / LAYOUT_REFERENCE));
+  simulation.force('link').distance(LINK_DISTANCE * k);
+  simulation.force('charge').strength(CHARGE_STRENGTH * k);
 }
 
 svg.call(d3.zoom().scaleExtent([0.2, 10]).on('zoom', e => g.attr('transform', e.transform)));
@@ -92,7 +118,8 @@ Promise.all([
   buildMapLegend();
   initControls(data);
   initMap(geo, data);
-  draw();
+  applyLayoutScale();
+  draw(0.6);                                   // first run: there is no layout to preserve yet
 });
 
 // ── Weight computation ───────────────────────────────────────────────────────
@@ -163,6 +190,24 @@ function netMigration(i) {
   return n.in[y] - n.out[y];
 }
 
+// ── Suppressed denominators ──────────────────────────────────────────────────
+// A state's out/in totals are sums over the cells the Bureau published. Through 2023 nothing is
+// suppressed and they reproduce the published marginals exactly; from 2024 they are FLOORS.
+// That matters more than it sounds, because the share metric divides by `out`: an understated
+// denominator is an overstated share, and suppression lands hardest on the small states the
+// share metric exists to surface. Vermont loses 11 of its 50 outbound cells, which lifts every
+// Vermont share by roughly a fifth. The app cannot recover the missing movers, so it says so.
+function outSuppressed(i) {
+  const n = networkData.nodes[i];
+  return (n.out_sup && n.out_sup[state.yearIndex]) || 0;
+}
+function inSuppressed(i) {
+  const n = networkData.nodes[i];
+  return (n.in_sup && n.in_sup[state.yearIndex]) || 0;
+}
+const DAGGER = '†';
+function shareDagger(originIndex) { return outSuppressed(originIndex) ? DAGGER : ''; }
+
 // ── Classification ───────────────────────────────────────────────────────────
 // True quintiles: equal counts of states per class. Appropriate for the selected-state view,
 // where values are unsigned shares or counts and the distribution is heavily right-skewed --
@@ -188,7 +233,13 @@ function classifyDiverging(values) {
 }
 
 // ── Main render ──────────────────────────────────────────────────────────────
-function draw() {
+// `reheat` is the alpha to restart the layout at, and it should be zero for most redraws.
+// A year step in particular must NOT reheat: the point of the year slider is to read one year
+// against the one before it, and that is impossible while the layout is still travelling. At
+// the 1100 ms play interval a 0.6 restart only decays to about 0.16 before the next frame, so
+// the graph never settles and every node drifts ~100 px over three frames -- change you cannot
+// attribute to the data. Positions hold; weights, radii and colours update.
+function draw(reheat = 0) {
   allLinks = computeLinks();
   activeLinks = allLinks.filter(l => weightOf(l) >= state.threshold);
 
@@ -249,7 +300,12 @@ function draw() {
     .strength(l => state.metric === 'share'
       ? Math.min(1, l.share / (maxWeight || 1))
       : Math.min(1, l.movers / (maxWeight || 1)));
-  simulation.alpha(0.6).restart();
+
+  if (reheat > 0) simulation.alpha(reheat).restart();
+  // forceLink resolves the new source/target indices into node objects when links() is called
+  // above, but nothing draws them until a tick. With the layout at rest, run one by hand so
+  // links that just entered pick up the positions their endpoints already hold.
+  else ticked();
 
   paint();
   updateStats();
@@ -353,10 +409,17 @@ const pct = d3.format('.1%');
 function showNodeTooltip(event, d) {
   const y = state.yearIndex, n = networkData.nodes[d.index];
   const net = netMigration(d.index);
+  const supOut = outSuppressed(d.index), supIn = inSuppressed(d.index);
+  const peers = networkData.nodes.length - 1;
   let html = `<strong>${d.name}</strong><br>${d.region} · ${networkData.years[y]}<br>` +
-    `<span class="num">Left the state: ${fmt(n.out[y])}<br>` +
-    `Arrived: ${fmt(n.in[y])}<br>` +
+    `<span class="num">Left the state: ${supOut ? '≥ ' : ''}${fmt(n.out[y])}<br>` +
+    `Arrived: ${supIn ? '≥ ' : ''}${fmt(n.in[y])}<br>` +
     `Net: ${net >= 0 ? '+' : '−'}${fmt(Math.abs(net))}</span>`;
+
+  if (supOut || supIn) {
+    html += `<br><span class="warn">${supOut} of ${peers} outbound and ${supIn} of ${peers} ` +
+      `inbound flows are too small to publish, so these totals are floors.</span>`;
+  }
 
   if (selectedNode && selectedNode.index !== d.index) {
     const l = allLinks.find(l =>
@@ -368,11 +431,18 @@ function showNodeTooltip(event, d) {
       const toSel   = selIsS ? l.ba : l.ab;
       const shareToOther = selIsS ? l.abShare : l.baShare;
       const shareToSel   = selIsS ? l.baShare : l.abShare;
+      // Each share is divided by its own origin's out total, so each carries its own dagger.
+      const dagOther = shareDagger(selectedNode.index);
+      const dagSel   = shareDagger(d.index);
       html += `<hr style="border:none;border-top:1px solid #444;margin:6px 0">` +
         `<span class="num">${selectedNode.id} → ${d.id}: ${toOther === null ? 'suppressed' : fmt(toOther)}` +
-        (toOther === null ? '' : ` (${pct(shareToOther)} of ${selectedNode.id}'s movers)`) + `<br>` +
+        (toOther === null ? '' : ` (${pct(shareToOther)}${dagOther} of ${selectedNode.id}'s movers)`) + `<br>` +
         `${d.id} → ${selectedNode.id}: ${toSel === null ? 'suppressed' : fmt(toSel)}` +
-        (toSel === null ? '' : ` (${pct(shareToSel)} of ${d.id}'s movers)`) + `</span>`;
+        (toSel === null ? '' : ` (${pct(shareToSel)}${dagSel} of ${d.id}'s movers)`) + `</span>`;
+      if (dagOther || dagSel) {
+        html += `<br><span class="warn">${DAGGER} divided by a total that excludes suppressed ` +
+          `flows, so the share is an upper bound.</span>`;
+      }
       if (l.unreliable) {
         html += `<br><span class="warn">Margin of error is large relative to the estimate.</span>`;
       }
@@ -393,9 +463,13 @@ function updateStats() {
   const movers = d3.sum(networkData.nodes, n => n.out[y]);
   const suppressed = d3.sum(networkData.links,
     l => (l.ab[y] === null ? 1 : 0) + (l.ba[y] === null ? 1 : 0));
+  // Suppressed cells never reach the node totals, so in a year with any suppression the headline
+  // figure is a floor. Say "≥" rather than quietly printing a total that is short by ~66,000.
+  const anySuppressed = d3.sum(networkData.nodes, n => (n.out_sup ? n.out_sup[y] : 0));
   document.getElementById('stat-edges').textContent =
     `${fmt(activeLinks.length)} of ${fmt(allLinks.length)}`;
-  document.getElementById('stat-movers').textContent = fmt(movers);
+  document.getElementById('stat-movers').textContent =
+    (anySuppressed ? '≥ ' : '') + fmt(movers);
   document.getElementById('stat-suppressed').textContent = fmt(suppressed);
 }
 
@@ -410,7 +484,7 @@ function initControls(data) {
     state.yearIndex = +i;
     document.getElementById('year-val').textContent = years[state.yearIndex];
     initThreshold(false);
-    draw();
+    draw();                                    // no reheat: hold the layout still across years
   };
   slider.addEventListener('input', function () { setYear(this.value); });
 
@@ -434,23 +508,23 @@ function initControls(data) {
     state.metric = this.value;
     initThreshold();
     updateMetricHint();
-    draw();
+    draw(0.6);                                 // link strengths all change; relayout is the point
   });
 
   d3.selectAll('input[name="mode"]').on('change', function () {
     state.mode = this.value;
-    draw();
+    draw(0.15);                                // radii change, so let collision resolve gently
   });
 
   document.getElementById('flag-unreliable').addEventListener('change', function () {
     state.flagUnreliable = this.checked;
-    draw();
+    draw();                                    // styling only
   });
 
   document.getElementById('threshold-slider').addEventListener('input', function () {
     state.threshold = thresholdFromSlider(+this.value);
     document.getElementById('threshold-val').textContent = thresholdLabel();
-    draw();
+    draw();                                    // filter only: edges vanish, states stay put
   });
 
   document.getElementById('year-val').textContent = years[state.yearIndex];
@@ -527,13 +601,28 @@ function initMap(geo, data) {
   mapSvg.on('click', () => select(null));
   centreMap();
 
+  let resizeTimer = null;
   window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(onResize, 120);       // resize fires per frame while dragging
+  });
+
+  function onResize() {
     const nr = mapContainer.getBoundingClientRect();
     projection.fitSize([nr.width * 0.94, nr.height * 0.84], geo);
     mapG.selectAll('path').attr('d', path);
     centreMap();
     positionMapLegend();
-  });
+
+    // The network panel needs the same treatment. forceCenter was built with the width the page
+    // happened to load at and nothing updated it, so after a resize the layout kept pulling
+    // toward a point that was no longer the middle of the panel -- at narrower widths that left
+    // whole states clipped against the panel edge. Re-aim it and let the graph walk over.
+    const { w, h } = dims();
+    simulation.force('center', d3.forceCenter(w / 2, h / 2));
+    applyLayoutScale();
+    simulation.alpha(0.3).restart();
+  }
 
   function centreMap() {
     const b = mapG.node().getBBox();

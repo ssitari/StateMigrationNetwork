@@ -71,6 +71,13 @@ The two views are classified differently, deliberately:
   still carry roughly equal counts (typically 7–14 states each), but the middle class straddles
   zero and every boundary is sign-correct.
 
+Both ramps are built for a dark ground, where brightness advances and darkness recedes — the
+reverse of print. ColorBrewer's schemes put their palest colour at the class meaning "least" or
+"no change", so on a near-black map they made the states that did nothing the loudest thing on
+screen. The sequential ramp is viridis, which runs dark to bright and stays ordered for colourblind
+readers; the diverging ramp keeps red = losing and blue = gaining but carries magnitude as
+brightness away from a dark neutral.
+
 ## Data
 
 U.S. Census Bureau, [American Community Survey State-to-State Migration
@@ -92,6 +99,19 @@ Four things about this source are worth knowing before drawing conclusions from 
 - **From 2024 the Bureau suppresses small cells** as `N` (too few sample cases). 255 of the 2,550
   ordered state pairs are suppressed in 2024; earlier years published an estimate for every pair.
   Suppressed cells are `null` in the data, never silently zero.
+
+- **In 2024 that makes every state total a floor, and every share an upper bound.** A state's
+  out-migration total is the sum of its published outbound cells. Through 2023 that reproduces the
+  Bureau's own published marginals *exactly* — verified state by state against the "Different state
+  of residence 1 year ago" column. From 2024 it is short by whatever the suppressed cells held, and
+  the share metric divides by it, so an understated denominator becomes an overstated share.
+  Suppression falls hardest on small states, which are the ones the share metric exists to show:
+  Vermont loses 11 of its 50 outbound cells and Wyoming 14, which lifts their shares by roughly a
+  fifth. Nationally the shortfall is about 66,000 movers, under 1% of the total.
+
+  The app does not paper over this. Node totals show as `≥`, affected shares carry a `†`, and the
+  tooltip names the number of suppressed flows. The counts ship as `out_sup` / `in_sup` per node
+  per year so the caveat travels with the data rather than living only in this README.
 
 ## Running locally
 
@@ -124,7 +144,7 @@ SHA-256 of every source file it downloaded is recorded in the `provenance` block
 
 | File | What it is |
 |---|---|
-| `data/migration_network.json` | Nodes, undirected links with both directional flows and MOEs per year, and source provenance |
+| `data/migration_network.json` | Nodes (with per-year `out`/`in` totals and the `out_sup`/`in_sup` counts of cells those totals are missing), undirected links with both directional flows and MOEs per year, and source provenance |
 | `data/s2s_flows_long.csv` | Tidy `year, origin, destination, movers, moe` — 48,450 rows, useful on its own |
 | `data/states.geojson` | 50 states + DC, WGS 84, generalized to 1:20M |
 

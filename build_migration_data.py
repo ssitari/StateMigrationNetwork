@@ -157,10 +157,19 @@ def main():
     if gap:
         sys.exit('not in states.geojson: %s -- run build_states_geojson.py' % sorted(gap))
 
+    # A state's out/in totals are row and column sums, with suppressed cells contributing nothing.
+    # Through 2023 nothing is suppressed and these reproduce the Bureau's own published marginals
+    # exactly. From 2024 they are FLOORS, not totals -- so record how many cells each sum is
+    # missing. The app divides by `out` to get the share metric, which makes an understated
+    # denominator an overstated share, and the states hit hardest are the small ones the share
+    # metric exists to show. Carrying the count lets the app say so instead of quietly rounding
+    # the caveat away.
     nodes = [{'id': props[s]['usps'], 'name': s, 'fips': props[s]['fips'],
               'region': region_of[s],
               'out': [sum(flows[y][(s, d)][0] or 0 for d in STATES if d != s) for y in years],
-              'in': [sum(flows[y][(o, s)][0] or 0 for o in STATES if o != s) for y in years]}
+              'in': [sum(flows[y][(o, s)][0] or 0 for o in STATES if o != s) for y in years],
+              'out_sup': [sum(flows[y][(s, d)][0] is None for d in STATES if d != s) for y in years],
+              'in_sup': [sum(flows[y][(o, s)][0] is None for o in STATES if o != s) for y in years]}
              for s in STATES]
 
     def cell(y, o, d):
@@ -183,6 +192,9 @@ def main():
            'metric': 'movers in the 12 months before the survey (ACS 1-year estimates)',
            'note': 'No 2020 table: the Census Bureau did not release standard 2020 ACS 1-year '
                    'estimates. Nulls are cells the Bureau suppressed as unreliable.',
+           'totals_note': 'node out/in are sums over published cells. Where out_sup/in_sup is '
+                          'above zero the sum is a floor, so shares computed against it are '
+                          'upper bounds.',
            'nodes': nodes, 'links': links, 'provenance': provenance}
     json.dump(out, open(OUT, 'w'), separators=(',', ':'))
 
