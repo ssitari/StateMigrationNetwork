@@ -149,7 +149,8 @@ function computeLinks() {
       abShare, baShare,
       movers: (ab || 0) + (ba || 0),
       share: Math.max(abShare, baShare),
-      suppressed: ab === null || ba === null,
+      // No separate `suppressed` flag: unreliable() already returns true for a suppressed cell,
+      // and the tooltip reads the raw ab/ba nulls directly.
       unreliable: unreliable(ab, l.abm[y]) || unreliable(ba, l.bam[y]),
     };
   }).filter(l => l.movers > 0);
@@ -212,10 +213,20 @@ function shareDagger(originIndex) { return outSuppressed(originIndex) ? DAGGER :
 // True quintiles: equal counts of states per class. Appropriate for the selected-state view,
 // where values are unsigned shares or counts and the distribution is heavily right-skewed --
 // equal-interval breaks would put nearly every state in the bottom class.
+// scaleQuantile will happily cut five classes out of two distinct values, and then every break
+// lands on the same number: a legend reading "12.5% - 12.5%" three times over. Never ask for more
+// classes than there are distinct values to put in them. The reduced ramp is the TOP of viridis,
+// so the brightest colour still means the largest value and the legend stays comparable with the
+// full five-class case.
 function classifyQuantile(values) {
   const vals = values.filter(v => v != null && !Number.isNaN(v));
-  const scale = d3.scaleQuantile().domain(vals).range(SEQ_COLORS);
-  return { scale, breaks: scale.quantiles(), colors: SEQ_COLORS };
+  const distinct = new Set(vals).size;
+  const k = Math.max(1, Math.min(CLASS_COUNT, distinct));
+  const colors = k === CLASS_COUNT
+    ? SEQ_COLORS
+    : d3.quantize(d3.interpolateViridis, CLASS_COUNT).slice(CLASS_COUNT - k);
+  const scale = d3.scaleQuantile().domain(vals).range(colors);
+  return { scale, breaks: scale.quantiles(), colors, single: k === 1 ? vals[0] : null };
 }
 
 // Net migration is signed and has a meaningful zero, so plain quintiles are the wrong tool: the
@@ -320,12 +331,16 @@ function select(node) {
 function paint() {
   const sel = selectedNode ? selectedNode.index : null;
 
-  // Values keyed by node index, for both panels.
+  // Map values come from EVERY link, not only the ones above the threshold. Classifying on the
+  // filtered set meant a control that reads as "hide weak edges in the network" also rescaled
+  // the choropleth: the same state in the same year drew breaks of "≥ 0.9%", "≥ 3.4%" or
+  // "≥ 9.2%" depending purely on the slider, and at high settings the map emptied out. The
+  // threshold now governs the panel it belongs to and nothing else.
   const values = new Map();
   if (sel === null) {
     simNodes.forEach(d => values.set(d.index, netMigration(d.index)));
   } else {
-    for (const l of activeLinks) {
+    for (const l of allLinks) {
       if (l.s === sel) values.set(l.t, pairValue(l, sel));
       else if (l.t === sel) values.set(l.s, pairValue(l, sel));
     }
@@ -343,7 +358,16 @@ function paint() {
     updateMapLegend(legendTitle(), cls, valueLabel);
   }
 
-  const neighbours = sel === null ? null : new Set(values.keys());
+  // Dimming in the network still follows the DRAWN edges, so raising the threshold visibly
+  // prunes the neighbourhood in the panel the threshold controls.
+  let neighbours = null;
+  if (sel !== null) {
+    neighbours = new Set();
+    for (const l of activeLinks) {
+      if (l.s === sel) neighbours.add(l.t);
+      else if (l.t === sel) neighbours.add(l.s);
+    }
+  }
 
   nodeLayer.selectAll('g.node')
     .attr('opacity', d => sel === null || d.index === sel || neighbours.has(d.index) ? 1 : 0.08);
@@ -554,17 +578,26 @@ function initThreshold(reset = true) {
     state.metric === 'share' ? 'Min edge share' : 'Min edge movers';
 
   if (state.metric === 'share') {
-    slider.max = SHARE_STEPS;
     slider.step = 1;
+    slider.max = SHARE_STEPS;
     if (reset) state.threshold = 0.03;           // ~480 edges: dense enough to read structure
     slider.value = Math.round(state.threshold * 1000);
   } else {
     const weights = computeLinks().map(l => l.movers).sort(d3.ascending);
-    slider.max = Math.round(d3.quantile(weights, 0.99));
     slider.step = 100;
+    // Every year has its own volume, so the movers range is rebuilt per year. Floor the max at
+    // one step so a very thin year cannot produce max < step, which no input can represent.
+    slider.max = Math.max(+slider.step, Math.round(d3.quantile(weights, 0.99)));
     if (reset) state.threshold = Math.round(d3.quantile(weights, 0.5));
-    slider.value = Math.min(state.threshold, slider.max);
+    slider.value = state.threshold;
   }
+
+  // Read the value back out instead of trusting what was just written. The input clamps to its
+  // own max and snaps to its own step, so this round-trip is the only thing that guarantees the
+  // thumb, the readout and the number the filter actually compares against are one value.
+  // Stepping the year under the movers metric used to shrink the range without clamping the
+  // stored threshold, leaving the thumb at 55,300 while the filter still used 57,800.
+  state.threshold = thresholdFromSlider(+slider.value);
   document.getElementById('threshold-val').textContent = thresholdLabel();
 }
 
@@ -648,17 +681,22 @@ function buildMapLegend() {
   positionMapLegend();
 }
 
+// The legend can carry fewer than CLASS_COUNT rows when the data does not support five classes,
+// so it is anchored on the number of rows actually drawn.
+let legendRows = CLASS_COUNT;
+
 function positionMapLegend() {
   const r = mapContainer.getBoundingClientRect();
   mapSvg.select('.map-legend')
-    .attr('transform', `translate(14, ${r.height - CLASS_COUNT * LEGEND_ROW - 14})`);
+    .attr('transform', `translate(14, ${r.height - legendRows * LEGEND_ROW - 14})`);
 }
 
 // Text for class k, given the k-1 lower and k upper break. Open-ended at both extremes, because
 // the outermost classes really are unbounded -- pretending otherwise would misstate the data.
-function classRange(k, breaks, label) {
-  if (k === CLASS_COUNT - 1) return `≥ ${label(breaks[breaks.length - 1])}`;
-  if (k === 0)               return `< ${label(breaks[0])}`;
+function classRange(k, breaks, label, n, single) {
+  if (n === 1)      return label(single);      // one value left: name it rather than bracket it
+  if (k === n - 1)  return `≥ ${label(breaks[breaks.length - 1])}`;
+  if (k === 0)      return `< ${label(breaks[0])}`;
   return `${label(breaks[k - 1])} – ${label(breaks[k])}`;
 }
 
@@ -666,9 +704,12 @@ function updateMapLegend(title, cls, label) {
   mapSvg.select('.legend-title').text(title);
 
   // Highest class on top, which is how a choropleth legend is conventionally read.
-  const rows = d3.range(CLASS_COUNT).reverse().map(k => ({
+  const n = cls.colors.length;
+  legendRows = n;
+  positionMapLegend();
+  const rows = d3.range(n).reverse().map(k => ({
     color: cls.colors[k],
-    text: classRange(k, cls.breaks, label),
+    text: classRange(k, cls.breaks, label, n, cls.single),
   }));
 
   const sel = mapSvg.select('.legend-classes').selectAll('g.legend-class').data(rows);

@@ -51,8 +51,10 @@ comparison.
   both.
 - **Year slider** — steps through the annual estimates; the play button animates them. Watching
   2007–2009 and 2021 in sequence is the point of the time dimension.
-- **Threshold slider** — hides weak edges. At the 3% default the graph carries roughly 350–500
-  edges and no state is isolated.
+- **Threshold slider** — hides weak edges **in the network panel only**. At the 3% default the
+  graph carries roughly 350–500 edges and no state is isolated. The map is deliberately left
+  alone: it always shows every relationship the selected state has, classified over all of them,
+  so the colours mean the same thing wherever the slider happens to sit.
 
 ## Map classification
 
