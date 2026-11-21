@@ -47,8 +47,15 @@ comparison.
   gained population from other states that year, red states lost it. Network nodes are colored by
   Census region and sized by total interstate movement.
 - **A state selected** — the map shows that state's relationships, and the network dims everything
-  not connected to it. The *Direction* control switches between out-migration, in-migration, and
-  both.
+  not connected to it. The selected state is drawn in neutral grey with a white outline in both
+  panels, the other nodes take the map's colours, and the region legend is hidden because no
+  region colours remain on screen. The *Direction* control switches between out-migration, in-migration, and
+  both, and the selected state's links follow it: each is redrawn at the value the map paints for
+  that pair and filtered against the threshold on that value, so a weak outbound flow does not show
+  as a strong link just because the other state sends many people back. The layout is not
+  recomputed on selection; with nothing selected, links stay undirected.
+- **Direction** also sizes the states (out, in, or total movers) and, with nothing selected, has no
+  effect on the links or the net-migration map.
 - **Year slider** — steps through the annual estimates; the play button animates them. Watching
   2007–2009 and 2021 in sequence is the point of the time dimension.
 - **Threshold slider** — hides weak edges **in the network panel only**. At the 3% default the
@@ -63,9 +70,14 @@ a stated range of values that the legend names.
 
 The two views are classified differently, deliberately:
 
-- **A state selected** — true **quintiles** (equal counts of states per class). These values are
-  unsigned and heavily right-skewed; equal-interval breaks would drop nearly every state into the
-  bottom class and waste four fifths of the palette.
+- **A state selected** — **quantiles** (roughly equal counts of states per class). These values
+  are unsigned and heavily right-skewed; equal-interval breaks would drop nearly every state into
+  the bottom class and waste four fifths of the palette. A published **zero** gets its own class,
+  "0 (none)", in the palest colour, and the quantiles are cut from the positive values only.
+  Otherwise the many zeros a small state has pull the bottom breaks onto 0 and the legend reads
+  "< 0.0%". Breaks that tie or would leave a class empty are dropped, so the map can show fewer
+  than five classes. Percent labels show as many decimals as it takes for no two to print alike.
+  Suppressed values sit outside the classes on a hatched row (see *Data*).
 - **No selection (net migration)** — quintiles are the *wrong* tool here. Net migration is signed
   with a meaningful zero, and equal-count breaks would put the zero crossing at an arbitrary point
   inside a class, so a state that gained people could be painted the same color as one that lost
@@ -73,12 +85,17 @@ The two views are classified differently, deliberately:
   still carry roughly equal counts (typically 7–14 states each), but the middle class straddles
   zero and every boundary is sign-correct.
 
-Both ramps are built for a dark ground, where brightness advances and darkness recedes — the
-reverse of print. ColorBrewer's schemes put their palest colour at the class meaning "least" or
-"no change", so on a near-black map they made the states that did nothing the loudest thing on
-screen. The sequential ramp is viridis, which runs dark to bright and stays ordered for colourblind
-readers; the diverging ramp keeps red = losing and blue = gaining but carries magnitude as
-brightness away from a dark neutral.
+All colours are [ColorBrewer](https://colorbrewer2.org/) schemes, used as published (Harrower and
+Brewer 2003):
+
+| Encoding | Scheme | Type |
+|---|---|---|
+| A selected state's relationships | YlGnBu, 5 classes | Sequential — light yellow = least, dark blue = most |
+| Net migration | RdBu, 5 classes | Diverging — red = lost people, blue = gained them |
+| Census region (network nodes) | Set2, 4 colours | Qualitative — the Census Bureau publishes no standard region colours |
+
+ColorBrewer was designed for a light ground. On this near-black page its palest classes (the
+smallest shares, and net migration near zero) are the brightest things on screen.
 
 ## Data
 
@@ -102,18 +119,25 @@ Four things about this source are worth knowing before drawing conclusions from 
   ordered state pairs are suppressed in 2024; earlier years published an estimate for every pair.
   Suppressed cells are `null` in the data, never silently zero.
 
-- **In 2024 that makes every state total a floor, and every share an upper bound.** A state's
-  out-migration total is the sum of its published outbound cells. Through 2023 that reproduces the
-  Bureau's own published marginals *exactly* — verified state by state against the "Different state
-  of residence 1 year ago" column. From 2024 it is short by whatever the suppressed cells held, and
-  the share metric divides by it, so an understated denominator becomes an overstated share.
-  Suppression falls hardest on small states, which are the ones the share metric exists to show:
-  Vermont loses 11 of its 50 outbound cells and Wyoming 14, which lifts their shares by roughly a
-  fifth. Nationally the shortfall is about 66,000 movers, under 1% of the total.
+- **State totals come from the Bureau's published totals, not from summing cells.** Through 2023
+  the two are identical — the matrix's row and column sums reproduce the Bureau's own published
+  marginals *exactly*, verified state by state. In 2024 a sum of the published cells would fall
+  short by whatever the suppressed cells held: 28,120 movers nationally, unevenly spread. That
+  shortfall used to feed straight into net migration and the share denominators — enough to flip
+  Kansas from a net loss of 85 to a net gain of 97, and to inflate Wyoming's shares by about 9% and
+  Vermont's by about 5%. The 2024 workbook also publishes each state's total interstate movers in
+  and out (its supplemental Tables 2 and 3, which cover the same 50 states plus DC and exclude
+  Puerto Rico). Suppression does not reduce those totals, so the build uses them. It checks that
+  they are never below the cell sum and equal it wherever a state has no suppressed cells, and
+  stops if either check fails.
 
-  The app does not paper over this. Node totals show as `≥`, affected shares carry a `†`, and the
-  tooltip names the number of suppressed flows. The counts ship as `out_sup` / `in_sup` per node
-  per year so the caveat travels with the data rather than living only in this README.
+  So the **net migration map is complete in every year**. What suppression still hides is the
+  individual flows. With a state selected, a pair whose value depends on a suppressed flow is
+  drawn **hatched** with its own legend row, outside the five classes, rather than counted as zero.
+  Under *Both directions* one suppressed direction is enough to hatch a pair, since a known flow
+  plus an unknown one cannot be classed. Suppressed pairs draw no network link, and the tooltip
+  names how many of a state's flows are suppressed. The counts ship as `out_sup` / `in_sup` per
+  node per year.
 
 ## Running locally
 
@@ -158,6 +182,15 @@ The same linked network-and-choropleth idea applied to NYC Citi Bike trips:
 [LinkedNetworkGraphChoroplethMap](https://github.com/ssitari/LinkedNetworkGraphChoroplethMap).
 
 ## Acknowledgements
+
+Map and legend colours are from ColorBrewer, by Cynthia A. Brewer, via
+[d3-scale-chromatic](https://github.com/d3/d3-scale-chromatic):
+
+- Brewer, Cynthia A. [ColorBrewer 2.0: Color Advice for Cartography](https://colorbrewer2.org/).
+  The Pennsylvania State University.
+- Harrower, Mark, and Cynthia A. Brewer. 2003. "ColorBrewer.org: An Online Tool for Selecting
+  Colour Schemes for Maps." *The Cartographic Journal* 40 (1): 27–37.
+  [doi:10.1179/000870403235002042](https://doi.org/10.1179/000870403235002042).
 
 Built with assistance from Claude (Anthropic).
 

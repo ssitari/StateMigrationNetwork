@@ -13,7 +13,9 @@ Notes on the source data:
   * There is no 2020 table. The Census Bureau did not release standard 2020 ACS 1-year
     estimates because of pandemic-driven collection problems. The gap is real, not an omission.
   * From 2024 the Bureau suppresses small cells as "N" (too few sample cases). Earlier years
-    published an estimate for every pair. Suppressed cells are written as null.
+    published an estimate for every pair. Suppressed cells are written as null. State totals
+    for those years come from the workbook's supplemental tables, which suppression does not
+    reduce, rather than from summing the cells.
   * Every estimate carries a 90% margin of error. For small state pairs the MOE can exceed the
     estimate itself; the app uses these to flag unreliable edges rather than hiding the problem.
 
@@ -111,10 +113,42 @@ def parse_tidy(d):
     return out
 
 
+def parse_totals(path, engine):
+    """Published per-state interstate mover totals, where the workbook ships them.
+
+    From 2024 the workbook carries two supplemental sheets beside the flow matrix: Table 2
+    (by current residence, "Movers to current residence from different state") and Table 3 (by
+    residence 1 year ago, "Movers from residence 1 year ago to different state"). Both cover the
+    50 states and DC only -- movers from/to Puerto Rico are excluded, per the sheets' own
+    footnotes -- which is the same universe as the 51 x 51 flow matrix. They are published
+    independently of the cells, so they are NOT reduced by cell suppression.
+
+    Returns {'in': {state: n}, 'out': {state: n}}, or None if the workbook has no such sheets.
+    """
+    sheets = pd.read_excel(path, sheet_name=None, header=None, engine=engine)
+    found = {}
+    for d in sheets.values():
+        title = ' '.join(str(v) for v in d.iloc[:3, 0])
+        if 'Supplemental' not in title:
+            continue
+        key = ('in' if 'Current Residence' in title else
+               'out' if 'Residence 1 Year Ago' in title else None)
+        hdr = next(i for i in range(15) if (d.iloc[i].astype(str).str.strip() == 'Estimate').any())
+        col = next(c for c in range(d.shape[1])
+                   if 'different state' in ' '.join(str(d.iat[r, c]) for r in range(hdr)))
+        found[key] = {state(d.iat[r, 0]): num(d.iat[r, col])
+                      for r in range(hdr + 1, len(d)) if state(d.iat[r, 0])}
+    if not found:
+        return None
+    if set(found) != {'in', 'out'} or any(set(v) != SSET for v in found.values()):
+        sys.exit('%s: supplemental totals incomplete' % path)
+    return found
+
+
 def main():
     os.makedirs(CACHE, exist_ok=True)
     years = sorted(SOURCES)
-    flows, provenance = {}, {}
+    flows, provenance, published = {}, {}, {}
 
     for y in years:
         path = SOURCES[y]
@@ -133,6 +167,11 @@ def main():
             sys.exit('%d: expected 2550 ordered state pairs, parsed %d' % (y, len(recs)))
         flows[y] = {(o, dst): (e, m) for o, dst, e, m in recs}
         miss = sum(1 for e, _ in flows[y].values() if e is None)
+        if miss:
+            published[y] = parse_totals(dest, engine)
+            if published[y] is None:
+                sys.exit('%d: cells are suppressed but no published state totals were found, so '
+                         'state totals would silently be floors' % y)
         print('%d  pairs=%d  suppressed=%3d  total=%s'
               % (y, len(recs), miss, format(sum(e or 0 for e, _ in flows[y].values()), ',.0f')))
 
@@ -157,17 +196,41 @@ def main():
     if gap:
         sys.exit('not in states.geojson: %s -- run build_states_geojson.py' % sorted(gap))
 
-    # A state's out/in totals are row and column sums, with suppressed cells contributing nothing.
-    # Through 2023 nothing is suppressed and these reproduce the Bureau's own published marginals
-    # exactly. From 2024 they are FLOORS, not totals -- so record how many cells each sum is
-    # missing. The app divides by `out` to get the share metric, which makes an understated
-    # denominator an overstated share, and the states hit hardest are the small ones the share
-    # metric exists to show. Carrying the count lets the app say so instead of quietly rounding
-    # the caveat away.
+    # A state's out/in totals. Through 2023 nothing is suppressed, and the row and column sums
+    # of the matrix reproduce the Bureau's own published marginals exactly. From 2024 the sums
+    # would be FLOORS -- short by whatever the suppressed cells held -- and the app builds net
+    # migration and the share denominators on them. So in a year with suppression the totals
+    # come from the Bureau's published supplemental tables instead, which are not reduced by
+    # suppression. out_sup/in_sup still count the suppressed cells, because the individual flows
+    # behind them remain unknown.
+    def cell_sum(y, s, direction):
+        pairs = ((s, d) for d in STATES if d != s) if direction == 'out' else \
+                ((o, s) for o in STATES if o != s)
+        return sum(flows[y][p][0] or 0 for p in pairs)
+
+    def total(y, s, direction):
+        summed = cell_sum(y, s, direction)
+        if y not in published:
+            return summed
+        pub = published[y][direction][s]
+        # Published totals can only exceed the cell sum by what suppression hid. Anything else
+        # means the two tables disagree on definitions, and mixing them would be wrong.
+        n_sup = sum(flows[y][p][0] is None for p in
+                    (((s, d) for d in STATES if d != s) if direction == 'out' else
+                     ((o, s) for o in STATES if o != s)))
+        if pub < summed or (n_sup == 0 and pub != summed):
+            sys.exit('%d %s %s: published total %d vs cell sum %d with %d suppressed cells'
+                     % (y, s, direction, pub, summed, n_sup))
+        return pub
+
+    for y in published:
+        gap = sum(total(y, s, 'out') - cell_sum(y, s, 'out') for s in STATES)
+        print('%d  published totals used; suppressed cells held %s movers' % (y, format(gap, ',.0f')))
+
     nodes = [{'id': props[s]['usps'], 'name': s, 'fips': props[s]['fips'],
               'region': region_of[s],
-              'out': [sum(flows[y][(s, d)][0] or 0 for d in STATES if d != s) for y in years],
-              'in': [sum(flows[y][(o, s)][0] or 0 for o in STATES if o != s) for y in years],
+              'out': [int(total(y, s, 'out')) for y in years],
+              'in': [int(total(y, s, 'in')) for y in years],
               'out_sup': [sum(flows[y][(s, d)][0] is None for d in STATES if d != s) for y in years],
               'in_sup': [sum(flows[y][(o, s)][0] is None for o in STATES if o != s) for y in years]}
              for s in STATES]
@@ -182,7 +245,9 @@ def main():
             b = STATES[j]
             ab = [cell(y, a, b) for y in years]
             ba = [cell(y, b, a) for y in years]
-            if all(v in (0, None) for v, _ in ab + ba):
+            # Omit a pair only when every cell is a published 0. A suppressed (None) cell is
+            # unknown, not zero, and the app has to be able to draw it as suppressed.
+            if all(v == 0 for v, _ in ab + ba):
                 continue
             links.append({'s': i, 't': j,
                           'ab': [v for v, _ in ab], 'abm': [v for _, v in ab],
@@ -192,9 +257,11 @@ def main():
            'metric': 'movers in the 12 months before the survey (ACS 1-year estimates)',
            'note': 'No 2020 table: the Census Bureau did not release standard 2020 ACS 1-year '
                    'estimates. Nulls are cells the Bureau suppressed as unreliable.',
-           'totals_note': 'node out/in are sums over published cells. Where out_sup/in_sup is '
-                          'above zero the sum is a floor, so shares computed against it are '
-                          'upper bounds.',
+           'totals_note': 'node out/in are the Bureau\'s published state totals of interstate '
+                          'movers (50 states + DC, excluding Puerto Rico). Through 2023 they equal '
+                          'the matrix row/column sums; in years with suppressed cells they come '
+                          'from the supplemental tables and exceed the sum of published cells. '
+                          'out_sup/in_sup count the suppressed cells per state.',
            'nodes': nodes, 'links': links, 'provenance': provenance}
     json.dump(out, open(OUT, 'w'), separators=(',', ':'))
 

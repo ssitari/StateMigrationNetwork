@@ -1,14 +1,21 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
+// Census regions are categories, so they take a ColorBrewer qualitative scheme (Set2). The Census
+// Bureau publishes no standard colours for its four regions.
 const REGION_COLOR = {
-  'Northeast': '#4e79a7',
-  'Midwest':   '#59a14f',
-  'South':     '#e15759',
-  'West':      '#f28e2b',
+  'Northeast': d3.schemeSet2[2],   // #8da0cb
+  'Midwest':   d3.schemeSet2[0],   // #66c2a5
+  'South':     d3.schemeSet2[1],   // #fc8d62
+  'West':      d3.schemeSet2[3],   // #e78ac3
 };
 const DEFAULT_COLOR = '#aaa';
 const LAND_COLOR    = '#2a2a2a';
+
+// The selected state is marked by a neutral grey fill and a white outline, in both panels. It is
+// not a region colour, because the region legend is hidden while a state is selected, and not
+// white, which would be confused with YlGnBu's palest class and RdBu's near-white midpoint.
+const SELECTED_FILL = '#8c8c8c';
 
 // An ACS margin of error is published at 90% confidence, so the standard error is MOE / 1.645.
 // Flag an estimate when its standard error exceeds two-thirds of the estimate -- the Census
@@ -31,6 +38,7 @@ let activeLinks  = [];
 let allLinks     = [];
 let fipsToIndex  = {};
 let playTimer    = null;
+let wScale       = null;   // link width scale, rebuilt by draw() over the undirected weights
 
 // ── SVG / layout ─────────────────────────────────────────────────────────────
 const container = document.getElementById('chart-container');
@@ -43,27 +51,20 @@ const mapContainer = document.getElementById('map-container');
 const mapSvg       = d3.select('#map');
 const mapG         = mapSvg.append('g');
 
-// Five-class schemes rather than continuous ramps, so every colour on the map corresponds to a
-// stated range of values.
+// Five-class ColorBrewer schemes (Brewer, colorbrewer2.org; shipped in d3-scale-chromatic), used
+// as published, rather than continuous ramps -- every colour on the map corresponds to a stated
+// range of values. Same convention as the other map projects in this account.
 //
-// Both ramps are chosen for a DARK ground, where the rule is the reverse of print: brightness
-// advances and darkness recedes. ColorBrewer's schemes put their palest colour at the class
-// meaning "least" or "no change", which is right on white paper and backwards here -- schemeRdBu
-// midpoint is #f7f7f7, so on a #141414 map the states that did nothing were the loudest thing
-// on screen, and schemeYlGnBu did the same for the smallest shares.
+// Known trade-off: ColorBrewer is designed for a light ground, so on this near-black page the
+// palest classes (the smallest shares; net migration near zero) are the brightest on screen.
 const CLASS_COUNT = 5;
 
-// Sequential: viridis is built dark-to-bright and stays monotonic for colourblind readers, so
-// the largest share is the brightest patch and the smallest recedes toward the ground.
-const SEQ_COLORS = d3.quantize(d3.interpolateViridis, CLASS_COUNT);
+// Sequential: YlGnBu, light yellow = least, dark blue = most.
+const SEQ_COLORS = d3.schemeYlGnBu[CLASS_COUNT];
 
-// Diverging: red = losing, blue = gaining, magnitude carried by brightness away from a neutral
-// that stays quiet. The neutral has to clear two other greys to read as a filled state rather
-// than a hole in the map -- LAND_COLOR #2a2a2a below it and the #444 state stroke above -- so it
-// sits just above the stroke while still being much the darkest of the five classes.
-// scaleThreshold assigns range[0] to the most negative class, so this array runs loss -> gain.
-// Do not reverse it.
-const DIV_COLORS = ['#e2603f', '#96503f', '#4a4a4a', '#3c6a8e', '#4fa8dc'];
+// Diverging: RdBu. schemeRdBu runs red -> blue and scaleThreshold assigns range[0] to the most
+// negative class, so red = losing, blue = gaining. Do not reverse it.
+const DIV_COLORS = d3.schemeRdBu[CLASS_COUNT];
 
 const tooltip = d3.select('#tooltip');
 
@@ -153,14 +154,42 @@ function computeLinks() {
       // and the tooltip reads the raw ab/ba nulls directly.
       unreliable: unreliable(ab, l.abm[y]) || unreliable(ba, l.bam[y]),
     };
-  }).filter(l => l.movers > 0);
+  // Every pair is kept, including published zeros and suppressed cells: the map has to class a
+  // zero as "0 (none)" and a suppressed cell as suppressed, and dropping them here painted both
+  // as bare land, which reads as missing data. Zero-weight links never reach the network --
+  // draw() filters them out.
+  });
 }
 
 function weightOf(l) { return state.metric === 'share' ? l.share : l.movers; }
 
-// The value the choropleth paints for state `other` when `sel` is selected.
+// The weight a link carries while `selIndex` is selected: exactly what the map paints for that
+// pair, so the two panels cannot tell different stories. The undirected weightOf() is an upper
+// bound on it under every metric and direction -- max(a/oA, b/oB) bounds either share and their
+// mediant (a+b)/(oA+oB), and a+b bounds a or b -- so the links that survive the threshold under
+// the directional weight are always a subset of the ones the layout was built from.
+function selectedWeight(l, selIndex) { return pairValue(l, selIndex); }
+
+// Reliability of only the flow(s) the directional weight is built from.
+function selectedUnreliable(l, selIndex) {
+  const selIsS = l.s === selIndex;
+  const abBad = unreliable(l.ab, l.abm), baBad = unreliable(l.ba, l.bam);
+  if (state.mode === 'out') return selIsS ? abBad : baBad;
+  if (state.mode === 'in')  return selIsS ? baBad : abBad;
+  return abBad || baBad;
+}
+
+// The value the choropleth paints for state `other` when `sel` is selected, or null when the
+// Bureau suppressed a flow the value depends on. A suppressed cell is unknown, not zero: painting
+// it as 0 put it in the bottom class, a definite-looking "almost nobody" the data does not say.
+// Under "both directions" one suppressed direction is enough -- the sum of a known flow and an
+// unknown one is not a number that can be classed.
 function pairValue(l, selIndex) {
   const selIsS = l.s === selIndex;
+  const needed = state.mode === 'out' ? [selIsS ? l.ab : l.ba]
+               : state.mode === 'in'  ? [selIsS ? l.ba : l.ab]
+               : [l.ab, l.ba];
+  if (needed.some(v => v === null)) return null;
   if (state.metric === 'share') {
     // out: of the SELECTED state's movers, the fraction that went to the other state.
     // in:  of the OTHER state's movers, the fraction that came to the selected state.
@@ -191,13 +220,12 @@ function netMigration(i) {
   return n.in[y] - n.out[y];
 }
 
-// ── Suppressed denominators ──────────────────────────────────────────────────
-// A state's out/in totals are sums over the cells the Bureau published. Through 2023 nothing is
-// suppressed and they reproduce the published marginals exactly; from 2024 they are FLOORS.
-// That matters more than it sounds, because the share metric divides by `out`: an understated
-// denominator is an overstated share, and suppression lands hardest on the small states the
-// share metric exists to surface. Vermont loses 11 of its 50 outbound cells, which lifts every
-// Vermont share by roughly a fifth. The app cannot recover the missing movers, so it says so.
+// ── Suppressed cells ─────────────────────────────────────────────────────────
+// From 2024 the Bureau suppresses some state-to-state cells. A state's out/in totals are NOT
+// affected: the build takes them from the Bureau's published state totals, which count every
+// mover including those in suppressed cells. So net migration and the share denominators are
+// complete; only the individual suppressed flows are unknown, and pairValue() returns null for
+// them. These counts are for the tooltip.
 function outSuppressed(i) {
   const n = networkData.nodes[i];
   return (n.out_sup && n.out_sup[state.yearIndex]) || 0;
@@ -206,27 +234,76 @@ function inSuppressed(i) {
   const n = networkData.nodes[i];
   return (n.in_sup && n.in_sup[state.yearIndex]) || 0;
 }
-const DAGGER = '†';
-function shareDagger(originIndex) { return outSuppressed(originIndex) ? DAGGER : ''; }
+
+// Fill for a state whose value is suppressed: hatching over the land colour, so it reads as
+// "no number here" rather than as one of the five classes. Defined once in the map SVG; inline
+// SVGs in one HTML document share an id space, so the network nodes can reference it too.
+const SUPPRESSED_FILL = 'url(#suppressed-hatch)';
+const SUPPRESSED_LABEL = 'Suppressed (too few sample cases)';
 
 // ── Classification ───────────────────────────────────────────────────────────
-// True quintiles: equal counts of states per class. Appropriate for the selected-state view,
-// where values are unsigned shares or counts and the distribution is heavily right-skewed --
+// Quantile classes: roughly equal counts of states per class. Appropriate for the selected-state
+// view, where values are unsigned shares or counts and the distribution is heavily right-skewed --
 // equal-interval breaks would put nearly every state in the bottom class.
-// scaleQuantile will happily cut five classes out of two distinct values, and then every break
-// lands on the same number: a legend reading "12.5% - 12.5%" three times over. Never ask for more
-// classes than there are distinct values to put in them. The reduced ramp is the TOP of viridis,
-// so the brightest colour still means the largest value and the legend stays comparable with the
-// full five-class case.
-function classifyQuantile(values) {
+//
+// A published ZERO gets a class of its own ("0 (none)", the palest colour) and the quantiles are
+// cut from the positive values only. Small states often send no one to a dozen others; left in
+// the quantiles, those ties dragged the bottom breaks onto zero and the legend read "< 0.0%" and
+// "0.0% – 0.1%" -- a class that looked negative, and one that mixed none with some.
+//
+// Ties can still collapse breaks, and an interpolated break can leave a class empty, so breaks
+// are kept only when the class beneath them holds at least one state. Fewer classes take the TOP
+// of the five-class YlGnBu, so the darkest blue always means the largest value. `integer` rounds
+// breaks up to whole numbers for mover counts, where a break of 2.5 would print as a tie.
+function classifyQuantile(values, integer = false) {
   const vals = values.filter(v => v != null && !Number.isNaN(v));
-  const distinct = new Set(vals).size;
-  const k = Math.max(1, Math.min(CLASS_COUNT, distinct));
-  const colors = k === CLASS_COUNT
-    ? SEQ_COLORS
-    : d3.quantize(d3.interpolateViridis, CLASS_COUNT).slice(CLASS_COUNT - k);
-  const scale = d3.scaleQuantile().domain(vals).range(colors);
-  return { scale, breaks: scale.quantiles(), colors, single: k === 1 ? vals[0] : null };
+  const hasZero = vals.some(v => v === 0);
+  const pos = vals.filter(v => v > 0).sort(d3.ascending);
+  const kPos = CLASS_COUNT - (hasZero ? 1 : 0);
+
+  let candidates = d3.range(1, kPos).map(i => d3.quantile(pos, i / kPos));
+  if (integer) candidates = candidates.map(Math.ceil);
+  const breaks = [];
+  for (const b of candidates) {
+    const lo = breaks.length ? breaks[breaks.length - 1] : -Infinity;
+    if (b > lo && pos.some(v => v >= lo && v < b)) breaks.push(b);
+  }
+
+  const nPos = pos.length ? breaks.length + 1 : 0;
+  const n = nPos + (hasZero ? 1 : 0);
+  const colors = SEQ_COLORS.slice(CLASS_COUNT - n);
+  const posColors = colors.slice(hasZero ? 1 : 0);
+  const thr = d3.scaleThreshold().domain(breaks).range(posColors);
+  const scale = v => (v === 0 ? colors[0] : thr(v));
+
+  // Legend rows, highest class first. The extremes stay open-ended ("<", "≥"), because the
+  // outermost classes really are unbounded; with a zero class below, "<" means "above 0, below".
+  const rows = label => {
+    const out = d3.range(nPos).map(j => {
+      let text;
+      if (nPos === 1) {
+        const lo = pos[0], hi = pos[pos.length - 1];
+        text = lo === hi ? label(lo) : `${label(lo)} – ${label(hi)}`;
+      } else if (j === 0)        text = `< ${label(breaks[0])}`;
+      else if (j === nPos - 1)   text = `≥ ${label(breaks[nPos - 2])}`;
+      else                       text = `${label(breaks[j - 1])} – ${label(breaks[j])}`;
+      return { color: posColors[j], text };
+    }).reverse();
+    if (hasZero) out.push({ color: colors[0], text: '0 (none)' });
+    return out;
+  };
+  return { scale, breaks, colors, rows, pos };
+}
+
+// Percent labels with just enough decimals that no two breaks print alike and none prints as
+// "0.0%". One decimal suits most states; a small state's in-migration shares need two or three.
+function shareLabelFor(values) {
+  for (const d of [1, 2, 3]) {
+    const f = d3.format(`.${d}%`);
+    const s = values.map(f);
+    if (new Set(s).size === s.length && values.every(v => v === 0 || parseFloat(f(v)) > 0)) return f;
+  }
+  return d3.format('.3%');
 }
 
 // Net migration is signed and has a meaningful zero, so plain quintiles are the wrong tool: the
@@ -252,23 +329,20 @@ function classifyDiverging(values) {
 // attribute to the data. Positions hold; weights, radii and colours update.
 function draw(reheat = 0) {
   allLinks = computeLinks();
-  activeLinks = allLinks.filter(l => weightOf(l) >= state.threshold);
+  activeLinks = allLinks.filter(l => weightOf(l) > 0 && weightOf(l) >= state.threshold);
 
   const maxMetric = d3.max(simNodes, d => nodeMetric(d.index)) || 1;
   const maxWeight = d3.max(activeLinks, weightOf) || 1;
   const rScale = d3.scaleSqrt().domain([0, maxMetric]).range([4, 26]);
-  const wScale = d3.scalePow().exponent(0.5).domain([0, maxWeight]).range([0.4, 8]).clamp(true);
+  wScale = d3.scalePow().exponent(0.5).domain([0, maxWeight]).range([0.4, 8]).clamp(true);
 
   const simLinks = activeLinks.map(l => ({ ...l, source: l.s, target: l.t }));
 
   // ── Links ──
+  // Width, dashing and opacity are set in paint(), because they depend on the selection.
   const linkSel = linkLayer.selectAll('line').data(simLinks, l => `${l.s}-${l.t}`);
   linkSel.exit().remove();
-  linkSel.enter().append('line')
-    .attr('stroke', '#888')
-    .merge(linkSel)
-    .attr('stroke-width', l => wScale(weightOf(l)))
-    .attr('stroke-dasharray', l => state.flagUnreliable && l.unreliable ? '2 3' : null);
+  linkSel.enter().append('line').attr('stroke', '#888');
 
   // ── Nodes ──
   const nodeSel = nodeLayer.selectAll('g.node').data(simNodes, d => d.id);
@@ -344,6 +418,9 @@ function paint() {
       if (l.s === sel) values.set(l.t, pairValue(l, sel));
       else if (l.t === sel) values.set(l.s, pairValue(l, sel));
     }
+    // The build omits a pair only when both directions are a published 0 in EVERY year (it
+    // fails rather than omit a suppressed one), so a state with no link exchanged no one.
+    for (const d of simNodes) if (d.index !== sel && !values.has(d.index)) values.set(d.index, 0);
   }
 
   let colorOf;
@@ -353,44 +430,68 @@ function paint() {
     colorOf = i => cls.scale(values.get(i) || 0);
     updateMapLegend('Net migration (in − out)', cls, netLabel);
   } else {
-    const cls = classifyQuantile(vals);
-    colorOf = i => (values.has(i) ? cls.scale(values.get(i)) : LAND_COLOR);
-    updateMapLegend(legendTitle(), cls, valueLabel);
+    // Suppressed values are left out of the class breaks and get their own legend row.
+    const cls = classifyQuantile(vals, state.metric === 'movers');
+    colorOf = i => !values.has(i) ? LAND_COLOR
+                 : values.get(i) === null ? SUPPRESSED_FILL
+                 : cls.scale(values.get(i));
+    const label = state.metric === 'share'
+      ? shareLabelFor([...cls.breaks, ...(cls.breaks.length ? [] : [cls.pos[0], cls.pos[cls.pos.length - 1]])]
+          .filter(v => v !== undefined))
+      : v => fmt(Math.round(v));
+    updateMapLegend(legendTitle(), cls, label, vals.some(v => v === null));
   }
 
-  // Dimming in the network still follows the DRAWN edges, so raising the threshold visibly
-  // prunes the neighbourhood in the panel the threshold controls.
+  // With a state selected, its links switch from the undirected weight to the directional one the
+  // map is painting, and the threshold is applied to that. Without this, Out-migration could show
+  // a heavy link to a neighbour the state barely sends anyone to, because the neighbour sends
+  // many people back. The LAYOUT is not touched -- clicking a state must not rearrange the graph
+  // -- only the styling of links already on screen.
+  const incident = l => sel !== null && (l.s === sel || l.t === sel);
+  const shownIncident = l => incident(l) && selectedWeight(l, sel) >= state.threshold &&
+    selectedWeight(l, sel) > 0;
+
+  // Dimming in the network follows the DRAWN edges, so raising the threshold visibly prunes the
+  // neighbourhood in the panel the threshold controls.
   let neighbours = null;
   if (sel !== null) {
     neighbours = new Set();
     for (const l of activeLinks) {
-      if (l.s === sel) neighbours.add(l.t);
-      else if (l.t === sel) neighbours.add(l.s);
+      if (!shownIncident(l)) continue;
+      neighbours.add(l.s === sel ? l.t : l.s);
     }
   }
+
+  // Nodes wear region colours only with nothing selected; once a state is selected they take the
+  // map's classes, so the region legend would be describing colours no longer on screen.
+  d3.selectAll('.region-legend').style('display', sel === null ? null : 'none');
 
   nodeLayer.selectAll('g.node')
     .attr('opacity', d => sel === null || d.index === sel || neighbours.has(d.index) ? 1 : 0.08);
 
   nodeLayer.selectAll('g.node circle')
     .attr('fill', d => d.index === sel
-      ? (REGION_COLOR[d.region] || DEFAULT_COLOR)
+      ? SELECTED_FILL
       : (sel === null ? (REGION_COLOR[d.region] || DEFAULT_COLOR) : colorOf(d.index)))
     .attr('stroke', d => d.index === sel ? '#fff' : 'rgba(0,0,0,0.4)')
     .attr('stroke-width', d => d.index === sel ? 3 : 0.9);
 
+  const isUnreliable = l => incident(l) ? selectedUnreliable(l, sel) : l.unreliable;
   linkLayer.selectAll('line')
+    .attr('stroke-width', l => wScale(incident(l) ? selectedWeight(l, sel) : weightOf(l)))
+    .attr('stroke-dasharray', l => state.flagUnreliable && isUnreliable(l) ? '2 3' : null)
     .attr('stroke-opacity', l => {
-      const base = state.flagUnreliable && l.unreliable ? 0.18 : 0.4;
+      const base = state.flagUnreliable && isUnreliable(l) ? 0.18 : 0.4;
       if (sel === null) return base;
-      return (l.source.index === sel || l.target.index === sel) ? Math.max(base, 0.85) : 0.04;
+      if (!incident(l)) return 0.04;
+      return shownIncident(l) ? Math.max(base, 0.85) : 0;
     });
 
   mapG.selectAll('path')
     .attr('fill', f => {
       const i = fipsToIndex[f.properties.fips];
       if (i === undefined) return LAND_COLOR;
-      if (i === sel) return REGION_COLOR[simNodes[i].region] || DEFAULT_COLOR;
+      if (i === sel) return SELECTED_FILL;
       return sel === null ? colorOf(i) : (values.has(i) ? colorOf(i) : LAND_COLOR);
     })
     .attr('stroke', f => fipsToIndex[f.properties.fips] === sel ? '#fff' : '#444')
@@ -436,13 +537,14 @@ function showNodeTooltip(event, d) {
   const supOut = outSuppressed(d.index), supIn = inSuppressed(d.index);
   const peers = networkData.nodes.length - 1;
   let html = `<strong>${d.name}</strong><br>${d.region} · ${networkData.years[y]}<br>` +
-    `<span class="num">Left the state: ${supOut ? '≥ ' : ''}${fmt(n.out[y])}<br>` +
-    `Arrived: ${supIn ? '≥ ' : ''}${fmt(n.in[y])}<br>` +
+    `<span class="num">Left the state: ${fmt(n.out[y])}<br>` +
+    `Arrived: ${fmt(n.in[y])}<br>` +
     `Net: ${net >= 0 ? '+' : '−'}${fmt(Math.abs(net))}</span>`;
 
   if (supOut || supIn) {
     html += `<br><span class="warn">${supOut} of ${peers} outbound and ${supIn} of ${peers} ` +
-      `inbound flows are too small to publish, so these totals are floors.</span>`;
+      `inbound flows are suppressed. The totals above are the Bureau's published state ` +
+      `totals and include them.</span>`;
   }
 
   if (selectedNode && selectedNode.index !== d.index) {
@@ -455,21 +557,17 @@ function showNodeTooltip(event, d) {
       const toSel   = selIsS ? l.ba : l.ab;
       const shareToOther = selIsS ? l.abShare : l.baShare;
       const shareToSel   = selIsS ? l.baShare : l.abShare;
-      // Each share is divided by its own origin's out total, so each carries its own dagger.
-      const dagOther = shareDagger(selectedNode.index);
-      const dagSel   = shareDagger(d.index);
       html += `<hr style="border:none;border-top:1px solid #444;margin:6px 0">` +
         `<span class="num">${selectedNode.id} → ${d.id}: ${toOther === null ? 'suppressed' : fmt(toOther)}` +
-        (toOther === null ? '' : ` (${pct(shareToOther)}${dagOther} of ${selectedNode.id}'s movers)`) + `<br>` +
+        (toOther === null ? '' : ` (${pct(shareToOther)} of ${selectedNode.id}'s movers)`) + `<br>` +
         `${d.id} → ${selectedNode.id}: ${toSel === null ? 'suppressed' : fmt(toSel)}` +
-        (toSel === null ? '' : ` (${pct(shareToSel)}${dagSel} of ${d.id}'s movers)`) + `</span>`;
-      if (dagOther || dagSel) {
-        html += `<br><span class="warn">${DAGGER} divided by a total that excludes suppressed ` +
-          `flows, so the share is an upper bound.</span>`;
-      }
+        (toSel === null ? '' : ` (${pct(shareToSel)} of ${d.id}'s movers)`) + `</span>`;
       if (l.unreliable) {
         html += `<br><span class="warn">Margin of error is large relative to the estimate.</span>`;
       }
+    } else {
+      html += `<hr style="border:none;border-top:1px solid #444;margin:6px 0">` +
+        `<span class="num">No movers between ${selectedNode.id} and ${d.id} in either direction.</span>`;
     }
   }
   tooltip.style('display', 'block').html(html);
@@ -487,13 +585,11 @@ function updateStats() {
   const movers = d3.sum(networkData.nodes, n => n.out[y]);
   const suppressed = d3.sum(networkData.links,
     l => (l.ab[y] === null ? 1 : 0) + (l.ba[y] === null ? 1 : 0));
-  // Suppressed cells never reach the node totals, so in a year with any suppression the headline
-  // figure is a floor. Say "≥" rather than quietly printing a total that is short by ~66,000.
-  const anySuppressed = d3.sum(networkData.nodes, n => (n.out_sup ? n.out_sup[y] : 0));
+  // Node totals are the Bureau's published state totals, so this is complete in every year.
+  const drawable = allLinks.filter(l => weightOf(l) > 0).length;
   document.getElementById('stat-edges').textContent =
-    `${fmt(activeLinks.length)} of ${fmt(allLinks.length)}`;
-  document.getElementById('stat-movers').textContent =
-    (anySuppressed ? '≥ ' : '') + fmt(movers);
+    `${fmt(activeLinks.length)} of ${fmt(drawable)}`;
+  document.getElementById('stat-movers').textContent = fmt(movers);
   document.getElementById('stat-suppressed').textContent = fmt(suppressed);
 }
 
@@ -560,6 +656,10 @@ function updateMetricHint() {
   document.getElementById('metric-hint').textContent = state.metric === 'share'
     ? 'Each edge is weighted by the larger of the two directional shares, so small states are not drowned out by large ones.'
     : 'Raw counts. Layout is dominated by state population and distance.';
+  document.getElementById('mode-hint').textContent =
+    'Sizes the states and colours the map. Select a state and its links follow this setting too; ' +
+    'with nothing selected, links are undirected (' +
+    (state.metric === 'share' ? 'the larger of the two shares' : 'both directions combined') + ').';
 }
 
 // The share slider works in tenths of a percent; the movers slider in people. Both are stored
@@ -583,7 +683,7 @@ function initThreshold(reset = true) {
     if (reset) state.threshold = 0.03;           // ~480 edges: dense enough to read structure
     slider.value = Math.round(state.threshold * 1000);
   } else {
-    const weights = computeLinks().map(l => l.movers).sort(d3.ascending);
+    const weights = computeLinks().map(l => l.movers).filter(v => v > 0).sort(d3.ascending);
     slider.step = 100;
     // Every year has its own volume, so the movers range is rebuilt per year. Floor the max at
     // one step so a very thin year cannot produce max < step, which no input can represent.
@@ -670,10 +770,16 @@ function initMap(geo, data) {
 const LEGEND_ROW = 15;
 
 const netLabel   = v => (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(Math.round(v)));
-const valueLabel = v => state.metric === 'share' ? pct(v) : fmt(Math.round(v));
 
 function buildMapLegend() {
-  const lg = mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
+  const pat = mapSvg.append('defs').append('pattern')
+    .attr('id', 'suppressed-hatch').attr('patternUnits', 'userSpaceOnUse')
+    .attr('width', 5).attr('height', 5).attr('patternTransform', 'rotate(45)');
+  pat.append('rect').attr('width', 5).attr('height', 5).attr('fill', LAND_COLOR);
+  pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 5)
+    .attr('stroke', '#8a8a8a').attr('stroke-width', 1.4);
+
+  const lg =mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
   lg.append('text').attr('class', 'legend-title')
     .attr('y', -8).attr('fill', '#bbb').attr('font-size', '10px')
     .attr('font-weight', '600').style('font-family', 'system-ui, sans-serif');
@@ -700,17 +806,19 @@ function classRange(k, breaks, label, n, single) {
   return `${label(breaks[k - 1])} – ${label(breaks[k])}`;
 }
 
-function updateMapLegend(title, cls, label) {
+function updateMapLegend(title, cls, label, hasSuppressed = false) {
   mapSvg.select('.legend-title').text(title);
 
-  // Highest class on top, which is how a choropleth legend is conventionally read.
+  // Highest class on top, which is how a choropleth legend is conventionally read. A suppressed
+  // row goes underneath, apart from the ordered classes it does not belong to.
   const n = cls.colors.length;
-  legendRows = n;
-  positionMapLegend();
-  const rows = d3.range(n).reverse().map(k => ({
+  const rows = cls.rows ? cls.rows(label) : d3.range(n).reverse().map(k => ({
     color: cls.colors[k],
     text: classRange(k, cls.breaks, label, n, cls.single),
   }));
+  if (hasSuppressed) rows.push({ color: SUPPRESSED_FILL, text: SUPPRESSED_LABEL });
+  legendRows = rows.length;
+  positionMapLegend();
 
   const sel = mapSvg.select('.legend-classes').selectAll('g.legend-class').data(rows);
   const enter = sel.enter().append('g').attr('class', 'legend-class');
