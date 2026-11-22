@@ -12,12 +12,15 @@ const REGION_COLOR = {
 const DEFAULT_COLOR = '#aaa';
 const LAND_COLOR    = '#e6e6e6';   // no data; also the ground of the suppressed hatching
 const STATE_STROKE  = '#9a9a9a';   // visible between two states in the same pale class
-const SELECTED_STROKE = '#222';
 
-// The selected state is marked by a neutral grey fill and a dark outline, in both panels. It is
-// not a region colour, because the region legend is hidden while a state is selected, and not
-// white, which would be confused with YlGnBu's palest class and RdBu's near-white midpoint.
-const SELECTED_FILL = '#8c8c8c';
+// The selected state is filled bright yellow, in both panels. The sequential scheme is BuGn,
+// which has no yellow in it, so the selection is distinct from every class by hue alone. On the
+// map it keeps the ordinary state border: a thick outline was partly hidden by neighbouring
+// borders and small states. In the network the node keeps a thin dark ring, because yellow on
+// white needs an edge to read. Not a region colour, since the region legend is hidden while a
+// state is selected.
+const SELECTED_FILL = '#ffd400';
+const SELECTED_NODE_STROKE = '#333';
 
 // An ACS margin of error is published at 90% confidence, so the standard error is MOE / 1.645.
 // Flag an estimate when its standard error exceeds two-thirds of the estimate -- the Census
@@ -73,8 +76,9 @@ const moeLayer     = mapG.append('g').attr('class', 'moe-overlay').attr('pointer
 // thing on screen, and RdBu's #f7f7f7 midpoint made states that did nothing the loudest.
 const CLASS_COUNT = 5;
 
-// Sequential: YlGnBu, light yellow = least, dark blue = most.
-const SEQ_COLORS = d3.schemeYlGnBu[CLASS_COUNT];
+// Sequential: BuGn, palest = least, dark green = most. Chosen over YlGnBu so the bright yellow
+// selection cannot be mistaken for a class.
+const SEQ_COLORS = d3.schemeBuGn[CLASS_COUNT];
 
 // Diverging: RdBu. schemeRdBu runs red -> blue and scaleThreshold assigns range[0] to the most
 // negative class, so red = losing, blue = gaining. Do not reverse it.
@@ -306,7 +310,7 @@ const SUPPRESSED_LABEL = 'Suppressed (too few sample cases)';
 //
 // Ties can still collapse breaks, and an interpolated break can leave a class empty, so breaks
 // are kept only when the class beneath them holds at least one state. Fewer classes take the TOP
-// of the five-class YlGnBu, so the darkest blue always means the largest value. `integer` rounds
+// of the five-class BuGn, so the darkest green always means the largest value. `integer` rounds
 // breaks up to whole numbers for mover counts, where a break of 2.5 would print as a tie.
 function classifyQuantile(values, integer = false) {
   const vals = values.filter(v => v != null && !Number.isNaN(v));
@@ -538,8 +542,8 @@ function paint() {
     .attr('fill', d => d.index === sel
       ? SELECTED_FILL
       : (sel === null ? (REGION_COLOR[d.region] || DEFAULT_COLOR) : colorOf(d.index)))
-    .attr('stroke', d => d.index === sel ? SELECTED_STROKE : 'rgba(0,0,0,0.4)')
-    .attr('stroke-width', d => d.index === sel ? 3 : 0.9);
+    .attr('stroke', d => d.index === sel ? SELECTED_NODE_STROKE : 'rgba(0,0,0,0.4)')
+    .attr('stroke-width', d => d.index === sel ? 1.5 : 0.9);
 
   const isUnreliable = l => incident(l) ? selectedUnreliable(l, sel) : l.unreliable;
   const lines = linkLayer.selectAll('line');
@@ -576,7 +580,7 @@ function paint() {
     .attr('fill-opacity', 0.85);
   ticked();                                            // place the arrows and trim their lines
 
-  // Dark dots on the three pale YlGnBu classes, light dots on the two dark ones, so they read on
+  // Dark dots on the three pale BuGn classes, light dots on the two dark ones, so they read on
   // either.
   moeLayer.selectAll('path').attr('fill', f => {
     const i = fipsToIndex[f.properties.fips];
@@ -591,8 +595,8 @@ function paint() {
       if (i === sel) return SELECTED_FILL;
       return sel === null ? colorOf(i) : (values.has(i) ? colorOf(i) : LAND_COLOR);
     })
-    .attr('stroke', f => fipsToIndex[f.properties.fips] === sel ? SELECTED_STROKE : STATE_STROKE)
-    .attr('stroke-width', f => fipsToIndex[f.properties.fips] === sel ? 2 : 0.5);
+    .attr('stroke', STATE_STROKE)
+    .attr('stroke-width', 0.5);
 }
 
 function legendTitle() {

@@ -56,7 +56,7 @@ comparison.
   Zooming in swaps in smaller reference values rather than letting the legend outgrow its corner.
   It never shows a value small enough to fall under the floor.
 - **A state selected** — the map shows that state's relationships, and the network dims everything
-  not connected to it. The selected state is drawn in neutral grey with a dark outline in both
+  not connected to it. The selected state is filled bright yellow in both
   panels, the other nodes take the map's colours, and the region legend is hidden because no
   region colours remain on screen. The *Direction* control switches between out-migration, in-migration, and
   both, and the selected state's links follow it: each is redrawn at the value the map paints for
@@ -102,9 +102,12 @@ Brewer 2003):
 
 | Encoding | Scheme | Type |
 |---|---|---|
-| A selected state's relationships | YlGnBu, 5 classes | Sequential — light yellow = least, dark blue = most |
+| A selected state's relationships | BuGn, 5 classes | Sequential — palest = least, dark green = most |
 | Net migration | RdBu, 5 classes | Diverging — red = lost people, blue = gained them |
 | Census region (network nodes) | Set2, 4 colours | Qualitative — the Census Bureau publishes no standard region colours |
+
+The selected state is bright yellow in both panels. BuGn is used rather than ColorBrewer's
+more familiar YlGnBu because it contains no yellow, so the selection can never be read as a class.
 
 The page is **light** because ColorBrewer was designed for a light ground. An earlier version ran
 on near-black, where the palest classes (the smallest shares, and net migration near zero) became
