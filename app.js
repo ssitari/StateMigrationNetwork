@@ -44,12 +44,23 @@ let wScale       = null;   // link width scale, rebuilt by draw() over the undir
 const container = document.getElementById('chart-container');
 const svg       = d3.select('#chart');
 const g         = svg.append('g');
-const linkLayer = g.append('g').attr('class', 'links');
-const nodeLayer = g.append('g').attr('class', 'nodes');
+const linkLayer  = g.append('g').attr('class', 'links');
+const arrowLayer = g.append('g').attr('class', 'arrows').attr('pointer-events', 'none');
+const nodeLayer  = g.append('g').attr('class', 'nodes');
+
+// Arrowheads are drawn as their own triangles rather than SVG markers. A marker scales with the
+// line's stroke width, and links here run from 0.4 to 8 px, so marker heads were either specks or
+// blobs. These are sized from the width but floored so even the thinnest link's direction reads.
+const LINK_COLOR = '#888';
+function arrowSize(w) { return { len: Math.max(7, w * 2.2), half: Math.max(3.5, w * 1.3) }; }
 
 const mapContainer = document.getElementById('map-container');
 const mapSvg       = d3.select('#map');
 const mapG         = mapSvg.append('g');
+// States, and above them a non-interactive copy of each outline that carries the margin-of-error
+// dots. The dots sit on their own layer so the class colour underneath stays untouched.
+const stateLayer   = mapG.append('g').attr('class', 'states');
+const moeLayer     = mapG.append('g').attr('class', 'moe-overlay').attr('pointer-events', 'none');
 
 // Five-class ColorBrewer schemes (Brewer, colorbrewer2.org; shipped in d3-scale-chromatic), used
 // as published, rather than continuous ramps -- every colour on the map corresponds to a stated
@@ -170,13 +181,19 @@ function weightOf(l) { return state.metric === 'share' ? l.share : l.movers; }
 // the directional weight are always a subset of the ones the layout was built from.
 function selectedWeight(l, selIndex) { return pairValue(l, selIndex); }
 
-// Reliability of only the flow(s) the directional weight is built from.
+// Reliability of exactly the value the selected-state view shows, so the map's dots and the
+// network's dashes always agree. Under "both directions" that value is the two-way sum, so it is
+// judged on the sum and its combined MOE (root sum of squares, the Census Bureau's standard
+// approximation for a sum of estimates) -- not flagged because one small direction is noisy
+// when a large, solid flow the other way dominates the total.
+// A share's relative error is taken as its flow's: the denominator is a state total, far more
+// precise than any single state-to-state cell.
 function selectedUnreliable(l, selIndex) {
   const selIsS = l.s === selIndex;
-  const abBad = unreliable(l.ab, l.abm), baBad = unreliable(l.ba, l.bam);
-  if (state.mode === 'out') return selIsS ? abBad : baBad;
-  if (state.mode === 'in')  return selIsS ? baBad : abBad;
-  return abBad || baBad;
+  if (state.mode === 'out') return selIsS ? unreliable(l.ab, l.abm) : unreliable(l.ba, l.bam);
+  if (state.mode === 'in')  return selIsS ? unreliable(l.ba, l.bam) : unreliable(l.ab, l.abm);
+  if (l.ab === null || l.ba === null) return true;
+  return unreliable(l.ab + l.ba, Math.hypot(l.abm || 0, l.bam || 0));
 }
 
 // The value the choropleth paints for state `other` when `sel` is selected, or null when the
@@ -342,7 +359,7 @@ function draw(reheat = 0) {
   // Width, dashing and opacity are set in paint(), because they depend on the selection.
   const linkSel = linkLayer.selectAll('line').data(simLinks, l => `${l.s}-${l.t}`);
   linkSel.exit().remove();
-  linkSel.enter().append('line').attr('stroke', '#888');
+  linkSel.enter().append('line').attr('stroke', LINK_COLOR);
 
   // ── Nodes ──
   const nodeSel = nodeLayer.selectAll('g.node').data(simNodes, d => d.id);
@@ -374,7 +391,8 @@ function draw(reheat = 0) {
     .text(d => d.id);
 
   const nodeAll = nodeEnter.merge(nodeSel);
-  nodeAll.select('circle').attr('r', d => rScale(nodeMetric(d.index)));
+  simNodes.forEach(d => { d.r = rScale(nodeMetric(d.index)); });   // ticked() stops arrows here
+  nodeAll.select('circle').attr('r', d => d.r);
   nodeAll.select('text').attr('dy', d => rScale(nodeMetric(d.index)) + 3);
 
   simulation.force('collision', d3.forceCollide().radius(d => rScale(nodeMetric(d.index)) + 3));
@@ -423,6 +441,19 @@ function paint() {
     for (const d of simNodes) if (d.index !== sel && !values.has(d.index)) values.set(d.index, 0);
   }
 
+  // States whose selected-state value fails the same reliability test that dashes the links get
+  // margin-of-error dots on the map. Not a published zero (a relative error of zero is undefined),
+  // not a suppressed value (already hatched), and not net migration, which needs an
+  // interval-crosses-zero test the data cannot yet support.
+  const moeFlagged = new Set();
+  if (sel !== null && state.flagUnreliable) {
+    for (const l of allLinks) {
+      if (l.s !== sel && l.t !== sel) continue;
+      const other = l.s === sel ? l.t : l.s, v = values.get(other);
+      if (v !== null && v !== 0 && selectedUnreliable(l, sel)) moeFlagged.add(other);
+    }
+  }
+
   let colorOf;
   const vals = Array.from(values.values());
   if (sel === null) {
@@ -439,7 +470,7 @@ function paint() {
       ? shareLabelFor([...cls.breaks, ...(cls.breaks.length ? [] : [cls.pos[0], cls.pos[cls.pos.length - 1]])]
           .filter(v => v !== undefined))
       : v => fmt(Math.round(v));
-    updateMapLegend(legendTitle(), cls, label, vals.some(v => v === null));
+    updateMapLegend(legendTitle(), cls, label, vals.some(v => v === null), moeFlagged.size > 0);
   }
 
   // With a state selected, its links switch from the undirected weight to the directional one the
@@ -477,8 +508,21 @@ function paint() {
     .attr('stroke-width', d => d.index === sel ? 3 : 0.9);
 
   const isUnreliable = l => incident(l) ? selectedUnreliable(l, sel) : l.unreliable;
-  linkLayer.selectAll('line')
-    .attr('stroke-width', l => wScale(incident(l) ? selectedWeight(l, sel) : weightOf(l)))
+  const lines = linkLayer.selectAll('line');
+  lines.each(l => {
+    l.w = wScale(incident(l) ? selectedWeight(l, sel) : weightOf(l));
+    // Which end carries an arrowhead: only the selected state's drawn links, and only when the
+    // Direction setting makes them directional. Out points away from the selected state, In
+    // points at it; Both directions and the unselected network stay undirected.
+    l.head = null;
+    if (state.mode !== 'total' && shownIncident(l)) {
+      const other = l.s === sel ? l.t : l.s;
+      const headIndex = state.mode === 'out' ? other : sel;
+      l.head = l.s === headIndex ? 'source' : 'target';
+    }
+  });
+  lines
+    .attr('stroke-width', l => l.w)
     .attr('stroke-dasharray', l => state.flagUnreliable && isUnreliable(l) ? '2 3' : null)
     .attr('stroke-opacity', l => {
       const base = state.flagUnreliable && isUnreliable(l) ? 0.18 : 0.4;
@@ -487,7 +531,26 @@ function paint() {
       return shownIncident(l) ? Math.max(base, 0.85) : 0;
     });
 
-  mapG.selectAll('path')
+  arrowLayer.selectAll('path')
+    .data(lines.data().filter(l => l.head), l => `${l.s}-${l.t}`)
+    .join('path')
+    .attr('d', l => {
+      const { len, half } = arrowSize(l.w);
+      return `M0,0L${-len},${-half}L${-len},${half}Z`;   // tip at the origin, pointing along +x
+    })
+    .attr('fill', LINK_COLOR)
+    .attr('fill-opacity', 0.85);
+  ticked();                                            // place the arrows and trim their lines
+
+  // Dark dots on the three pale YlGnBu classes, light dots on the two dark ones, so they read on
+  // either.
+  moeLayer.selectAll('path').attr('fill', f => {
+    const i = fipsToIndex[f.properties.fips];
+    if (!moeFlagged.has(i)) return 'none';
+    return d3.lab(colorOf(i)).l > 60 ? 'url(#moe-dots-dark)' : 'url(#moe-dots-light)';
+  });
+
+  stateLayer.selectAll('path')
     .attr('fill', f => {
       const i = fipsToIndex[f.properties.fips];
       if (i === undefined) return LAND_COLOR;
@@ -507,10 +570,38 @@ function legendTitle() {
 }
 
 // ── Tick / drag ──────────────────────────────────────────────────────────────
+// Where a directed link's arrow sits: the tip just outside the head node's circle, so the circle
+// does not swallow it, and the line trimmed back to the arrow's base so its butt end does not
+// poke past the tip.
+function arrowGeometry(l) {
+  const head = l.head === 'target' ? l.target : l.source;
+  const tail = l.head === 'target' ? l.source : l.target;
+  const dx = head.x - tail.x, dy = head.y - tail.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist, uy = dy / dist;
+  const tipBack = (head.r || 0) + 1.5;
+  const { len } = arrowSize(l.w);
+  return {
+    tipX: head.x - ux * tipBack, tipY: head.y - uy * tipBack,
+    baseX: head.x - ux * (tipBack + len - 1), baseY: head.y - uy * (tipBack + len - 1),
+    angle: Math.atan2(dy, dx) * 180 / Math.PI,
+  };
+}
+
 function ticked() {
-  linkLayer.selectAll('line')
-    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  linkLayer.selectAll('line').each(function (d) {
+    let x1 = d.source.x, y1 = d.source.y, x2 = d.target.x, y2 = d.target.y;
+    if (d.head) {
+      const a = arrowGeometry(d);
+      if (d.head === 'target') { x2 = a.baseX; y2 = a.baseY; } else { x1 = a.baseX; y1 = a.baseY; }
+    }
+    this.setAttribute('x1', x1); this.setAttribute('y1', y1);
+    this.setAttribute('x2', x2); this.setAttribute('y2', y2);
+  });
+  arrowLayer.selectAll('path').attr('transform', d => {
+    const a = arrowGeometry(d);
+    return `translate(${a.tipX},${a.tipY}) rotate(${a.angle})`;
+  });
   nodeLayer.selectAll('g.node').attr('transform', d => `translate(${d.x},${d.y})`);
 }
 
@@ -657,7 +748,8 @@ function updateMetricHint() {
     ? 'Each edge is weighted by the larger of the two directional shares, so small states are not drowned out by large ones.'
     : 'Raw counts. Layout is dominated by state population and distance.';
   document.getElementById('mode-hint').textContent =
-    'Sizes the states and colours the map. Select a state and its links follow this setting too; ' +
+    'Sizes the states and colours the map. Select a state and its links follow this setting too, ' +
+    'with arrows for out- or in-migration; ' +
     'with nothing selected, links are undirected (' +
     (state.metric === 'share' ? 'the larger of the two shares' : 'both directions combined') + ').';
 }
@@ -710,7 +802,13 @@ function initMap(geo, data) {
   const projection = d3.geoAlbersUsa().fitSize([r.width * 0.94, r.height * 0.84], geo);
   const path = d3.geoPath(projection);
 
-  mapG.selectAll('path')
+  moeLayer.selectAll('path')
+    .data(geo.features, f => f.properties.fips)
+    .enter().append('path')
+    .attr('d', path)
+    .attr('fill', 'none');
+
+  stateLayer.selectAll('path')
     .data(geo.features, f => f.properties.fips)
     .enter().append('path')
     .attr('d', path)
@@ -743,7 +841,8 @@ function initMap(geo, data) {
   function onResize() {
     const nr = mapContainer.getBoundingClientRect();
     projection.fitSize([nr.width * 0.94, nr.height * 0.84], geo);
-    mapG.selectAll('path').attr('d', path);
+    stateLayer.selectAll('path').attr('d', path);
+    moeLayer.selectAll('path').attr('d', path);
     centreMap();
     positionMapLegend();
 
@@ -779,6 +878,19 @@ function buildMapLegend() {
   pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 5)
     .attr('stroke', '#8a8a8a').attr('stroke-width', 1.4);
 
+  // Margin-of-error dots: a sparse stipple with a transparent ground, laid over the class colour.
+  // Dots, not lines, so it cannot be mistaken for the suppressed hatching.
+  const defs = mapSvg.select('defs');
+  const dots = (id, dot, ground) => {
+    const p = defs.append('pattern').attr('id', id).attr('patternUnits', 'userSpaceOnUse')
+      .attr('width', 4).attr('height', 4);
+    if (ground) p.append('rect').attr('width', 4).attr('height', 4).attr('fill', ground);
+    p.append('circle').attr('cx', 2).attr('cy', 2).attr('r', 0.9).attr('fill', dot);
+  };
+  dots('moe-dots-dark',   'rgba(0,0,0,0.6)');
+  dots('moe-dots-light',  'rgba(255,255,255,0.7)');
+  dots('moe-dots-swatch', 'rgba(0,0,0,0.6)', SEQ_COLORS[1]);   // legend: dots on a mid class
+
   const lg =mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
   lg.append('text').attr('class', 'legend-title')
     .attr('y', -8).attr('fill', '#bbb').attr('font-size', '10px')
@@ -806,7 +918,7 @@ function classRange(k, breaks, label, n, single) {
   return `${label(breaks[k - 1])} – ${label(breaks[k])}`;
 }
 
-function updateMapLegend(title, cls, label, hasSuppressed = false) {
+function updateMapLegend(title, cls, label, hasSuppressed = false, hasMoe = false) {
   mapSvg.select('.legend-title').text(title);
 
   // Highest class on top, which is how a choropleth legend is conventionally read. A suppressed
@@ -816,6 +928,7 @@ function updateMapLegend(title, cls, label, hasSuppressed = false) {
     color: cls.colors[k],
     text: classRange(k, cls.breaks, label, n, cls.single),
   }));
+  if (hasMoe) rows.push({ color: 'url(#moe-dots-swatch)', text: 'Large margin of error' });
   if (hasSuppressed) rows.push({ color: SUPPRESSED_FILL, text: SUPPRESSED_LABEL });
   legendRows = rows.length;
   positionMapLegend();

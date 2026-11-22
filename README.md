@@ -52,8 +52,11 @@ comparison.
   region colours remain on screen. The *Direction* control switches between out-migration, in-migration, and
   both, and the selected state's links follow it: each is redrawn at the value the map paints for
   that pair and filtered against the threshold on that value, so a weak outbound flow does not show
-  as a strong link just because the other state sends many people back. The layout is not
-  recomputed on selection; with nothing selected, links stay undirected.
+  as a strong link just because the other state sends many people back. Under out- and
+  in-migration those links carry **arrowheads** pointing the way people moved (away from the
+  selected state, or into it). Under *Both directions* they stay plain lines, because the value
+  is the two-way exchange. The layout is not recomputed on selection; with nothing selected,
+  links stay undirected.
 - **Direction** also sizes the states (out, in, or total movers) and, with nothing selected, has no
   effect on the links or the net-migration map.
 - **Year slider** — steps through the annual estimates; the play button animates them. Watching
@@ -112,9 +115,26 @@ Four things about this source are worth knowing before drawing conclusions from 
   because pandemic conditions wrecked data collection. The year slider steps from 2019 to 2021.
   The gap is real, not an oversight.
 - **Every number is a survey estimate with a margin of error**, and for small state pairs the MOE
-  can exceed the estimate itself. Edges whose 90% margin of error implies a standard error above
-  two-thirds of the estimate are drawn dashed and faded; the tooltip says so explicitly. The
-  underlying MOEs ship in the data files rather than being discarded.
+  can exceed the estimate itself. An estimate is flagged when its standard error (the 90% MOE
+  divided by 1.645) exceeds two-thirds of the estimate. Flagged links are drawn dashed and faded,
+  and the tooltip says so explicitly. With a state selected, the same test **dots** the map: a
+  fine stipple over the class colour, so the colour still says which class the estimate falls
+  in, and dots rather than lines so it is not confused with the suppressed hatching. In a typical
+  view this marks 5–11 of the other 50 states, mostly in the pale bottom classes, where flows
+  are smallest and relative error largest. The links and the map always use the same test on
+  the same value:
+  - Under *Both directions* that value is the two-way sum, judged with the combined MOE (root sum
+    of squares, the Census Bureau's approximation for a sum of estimates).
+  - A share inherits its flow's relative error, since the state-total denominator is far more
+    precise.
+  - A published zero is not dotted, because relative error is undefined at zero.
+
+  The net-migration map carries no such marker yet. Net is a difference, so a relative-error test
+  would flag every state near zero. The right question there is whether the 90% interval
+  crosses zero, and the data does not yet carry margins of error for the state totals.
+
+  The **Flag unreliable estimates** checkbox turns both cues off. The underlying MOEs ship in the
+  data files rather than being discarded.
 - **From 2024 the Bureau suppresses small cells** as `N` (too few sample cases). 255 of the 2,550
   ordered state pairs are suppressed in 2024; earlier years published an estimate for every pair.
   Suppressed cells are `null` in the data, never silently zero.
