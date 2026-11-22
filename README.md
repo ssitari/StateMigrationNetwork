@@ -130,8 +130,10 @@ Four things about this source are worth knowing before drawing conclusions from 
   fine stipple over the class colour, so the colour still says which class the estimate falls
   in, and dots rather than lines so it is not confused with the suppressed hatching. In a typical
   view this marks 5–11 of the other 50 states, mostly in the pale bottom classes, where flows
-  are smallest and relative error largest. The links and the map always use the same test on
-  the same value:
+  are smallest and relative error largest. The links, the map and the tooltip warning always use
+  the same test on the same value, the one the current Direction shows. An outbound view does not
+  warn about a noisy inbound flow, and the warning names the estimate it means (for example
+  "DC → AL"). How that value is judged:
   - Under *Both directions* that value is the two-way sum, judged with the combined MOE (root sum
     of squares, the Census Bureau's approximation for a sum of estimates).
   - A share inherits its flow's relative error, since the state-total denominator is far more

@@ -202,6 +202,15 @@ function selectedUnreliable(l, selIndex) {
   return unreliable(l.ab + l.ba, Math.hypot(l.abm || 0, l.bam || 0));
 }
 
+// The one "is what we are showing unreliable?" test for the selected-state view, shared by the
+// map dots and the tooltip (the link dashes use selectedUnreliable on links that, being drawn,
+// already have a non-null, non-zero value). Not a suppressed value, which is hatched and labelled
+// "suppressed" instead, and not a published zero, whose relative error is undefined.
+function shownValueUnreliable(l, selIndex) {
+  const v = pairValue(l, selIndex);
+  return v !== null && v !== 0 && selectedUnreliable(l, selIndex);
+}
+
 // The value the choropleth paints for state `other` when `sel` is selected, or null when the
 // Bureau suppressed a flow the value depends on. A suppressed cell is unknown, not zero: painting
 // it as 0 put it in the bottom class, a definite-looking "almost nobody" the data does not say.
@@ -472,8 +481,7 @@ function paint() {
   if (sel !== null && state.flagUnreliable) {
     for (const l of allLinks) {
       if (l.s !== sel && l.t !== sel) continue;
-      const other = l.s === sel ? l.t : l.s, v = values.get(other);
-      if (v !== null && v !== 0 && selectedUnreliable(l, sel)) moeFlagged.add(other);
+      if (shownValueUnreliable(l, sel)) moeFlagged.add(l.s === sel ? l.t : l.s);
     }
   }
 
@@ -676,8 +684,14 @@ function showNodeTooltip(event, d) {
         (toOther === null ? '' : ` (${pct(shareToOther)} of ${selectedNode.id}'s movers)`) + `<br>` +
         `${d.id} → ${selectedNode.id}: ${toSel === null ? 'suppressed' : fmt(toSel)}` +
         (toSel === null ? '' : ` (${pct(shareToSel)} of ${d.id}'s movers)`) + `</span>`;
-      if (l.unreliable) {
-        html += `<br><span class="warn">Margin of error is large relative to the estimate.</span>`;
+      // Same test as the map dots and link dashes, on the value the current Direction shows --
+      // not "either direction", which warned about a noisy inbound flow in an outbound view.
+      if (shownValueUnreliable(l, selectedNode.index)) {
+        const which = state.mode === 'out' ? `${selectedNode.id} → ${d.id}`
+                    : state.mode === 'in'  ? `${d.id} → ${selectedNode.id}`
+                    : 'two-way';
+        html += `<br><span class="warn">The ${which} estimate's margin of error is large ` +
+          `relative to the estimate.</span>`;
       }
     } else {
       html += `<hr style="border:none;border-top:1px solid #444;margin:6px 0">` +
