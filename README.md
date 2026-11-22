@@ -56,7 +56,7 @@ comparison.
   Zooming in swaps in smaller reference values rather than letting the legend outgrow its corner.
   It never shows a value small enough to fall under the floor.
 - **A state selected** — the map shows that state's relationships, and the network dims everything
-  not connected to it. The selected state is drawn in neutral grey with a white outline in both
+  not connected to it. The selected state is drawn in neutral grey with a dark outline in both
   panels, the other nodes take the map's colours, and the region legend is hidden because no
   region colours remain on screen. The *Direction* control switches between out-migration, in-migration, and
   both, and the selected state's links follow it: each is redrawn at the value the map paints for
@@ -106,8 +106,12 @@ Brewer 2003):
 | Net migration | RdBu, 5 classes | Diverging — red = lost people, blue = gained them |
 | Census region (network nodes) | Set2, 4 colours | Qualitative — the Census Bureau publishes no standard region colours |
 
-ColorBrewer was designed for a light ground. On this near-black page its palest classes (the
-smallest shares, and net migration near zero) are the brightest things on screen.
+The page is **light** because ColorBrewer was designed for a light ground. An earlier version ran
+on near-black, where the palest classes (the smallest shares, and net migration near zero) became
+the brightest things on screen, and RdBu's near-white midpoint made the states that changed least
+the loudest. Reversing the ramps on a dark ground (light = more, as some web-mapping guidance
+suggests) was considered and rejected: in a 214-person study of choropleths in dark mode, 87–94%
+of readers still read darker as more (Schiewe 2024).
 
 ## Data
 
@@ -144,7 +148,7 @@ Four things about this source are worth knowing before drawing conclusions from 
   would flag every state near zero. The right question there is whether the 90% interval
   crosses zero, and the data does not yet carry margins of error for the state totals.
 
-  The **Flag unreliable estimates** checkbox turns both cues off. The underlying MOEs ship in the
+  The **Flag estimates with high relative uncertainty** checkbox turns both cues off. The underlying MOEs ship in the
   data files rather than being discarded.
 - **From 2024 the Bureau suppresses small cells** as `N` (too few sample cases). 255 of the 2,550
   ordered state pairs are suppressed in 2024; earlier years published an estimate for every pair.
@@ -222,6 +226,12 @@ Map and legend colours are from ColorBrewer, by Cynthia A. Brewer, via
 - Harrower, Mark, and Cynthia A. Brewer. 2003. "ColorBrewer.org: An Online Tool for Selecting
   Colour Schemes for Maps." *The Cartographic Journal* 40 (1): 27–37.
   [doi:10.1179/000870403235002042](https://doi.org/10.1179/000870403235002042).
+
+On light versus dark grounds for choropleths:
+
+- Schiewe, Jochen. 2024. "Dark-is-more Bias Also in Dark Mode? Perception of Colours in
+  Choropleth Maps in Dark Mode." *KN – Journal of Cartography and Geographic Information* 74 (2):
+  171–180. [doi:10.1007/s42489-024-00171-z](https://doi.org/10.1007/s42489-024-00171-z).
 
 Built with assistance from Claude (Anthropic).
 

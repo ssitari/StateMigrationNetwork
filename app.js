@@ -10,9 +10,11 @@ const REGION_COLOR = {
   'West':      d3.schemeSet2[3],   // #e78ac3
 };
 const DEFAULT_COLOR = '#aaa';
-const LAND_COLOR    = '#2a2a2a';
+const LAND_COLOR    = '#e6e6e6';   // no data; also the ground of the suppressed hatching
+const STATE_STROKE  = '#9a9a9a';   // visible between two states in the same pale class
+const SELECTED_STROKE = '#222';
 
-// The selected state is marked by a neutral grey fill and a white outline, in both panels. It is
+// The selected state is marked by a neutral grey fill and a dark outline, in both panels. It is
 // not a region colour, because the region legend is hidden while a state is selected, and not
 // white, which would be confused with YlGnBu's palest class and RdBu's near-white midpoint.
 const SELECTED_FILL = '#8c8c8c';
@@ -51,7 +53,7 @@ const nodeLayer  = g.append('g').attr('class', 'nodes');
 // Arrowheads are drawn as their own triangles rather than SVG markers. A marker scales with the
 // line's stroke width, and links here run from 0.4 to 8 px, so marker heads were either specks or
 // blobs. These are sized from the width but floored so even the thinnest link's direction reads.
-const LINK_COLOR = '#888';
+const LINK_COLOR = '#777';
 function arrowSize(w) { return { len: Math.max(7, w * 2.2), half: Math.max(3.5, w * 1.3) }; }
 
 const mapContainer = document.getElementById('map-container');
@@ -66,8 +68,9 @@ const moeLayer     = mapG.append('g').attr('class', 'moe-overlay').attr('pointer
 // as published, rather than continuous ramps -- every colour on the map corresponds to a stated
 // range of values. Same convention as the other map projects in this account.
 //
-// Known trade-off: ColorBrewer is designed for a light ground, so on this near-black page the
-// palest classes (the smallest shares; net migration near zero) are the brightest on screen.
+// The page is light because ColorBrewer is designed for a light ground: on the earlier near-black
+// page the palest classes (the smallest shares; net migration near zero) were the brightest
+// thing on screen, and RdBu's #f7f7f7 midpoint made states that did nothing the loudest.
 const CLASS_COUNT = 5;
 
 // Sequential: YlGnBu, light yellow = least, dark blue = most.
@@ -411,11 +414,11 @@ function draw(reheat = 0) {
     .attr('text-anchor', 'middle')
     .attr('dominant-baseline', 'hanging')
     .attr('pointer-events', 'none')
-    .attr('fill', '#ddd')
+    .attr('fill', '#222')
     .attr('font-size', '10px')
     .attr('font-weight', '600')
     .attr('paint-order', 'stroke')
-    .attr('stroke', '#141414')
+    .attr('stroke', '#fff')
     .attr('stroke-width', '3px')
     .attr('stroke-linejoin', 'round')
     .style('font-family', 'system-ui, sans-serif')
@@ -535,7 +538,7 @@ function paint() {
     .attr('fill', d => d.index === sel
       ? SELECTED_FILL
       : (sel === null ? (REGION_COLOR[d.region] || DEFAULT_COLOR) : colorOf(d.index)))
-    .attr('stroke', d => d.index === sel ? '#fff' : 'rgba(0,0,0,0.4)')
+    .attr('stroke', d => d.index === sel ? SELECTED_STROKE : 'rgba(0,0,0,0.4)')
     .attr('stroke-width', d => d.index === sel ? 3 : 0.9);
 
   const isUnreliable = l => incident(l) ? selectedUnreliable(l, sel) : l.unreliable;
@@ -588,7 +591,7 @@ function paint() {
       if (i === sel) return SELECTED_FILL;
       return sel === null ? colorOf(i) : (values.has(i) ? colorOf(i) : LAND_COLOR);
     })
-    .attr('stroke', f => fipsToIndex[f.properties.fips] === sel ? '#fff' : '#444')
+    .attr('stroke', f => fipsToIndex[f.properties.fips] === sel ? SELECTED_STROKE : STATE_STROKE)
     .attr('stroke-width', f => fipsToIndex[f.properties.fips] === sel ? 2 : 0.5);
 }
 
@@ -679,7 +682,7 @@ function showNodeTooltip(event, d) {
       const toSel   = selIsS ? l.ba : l.ab;
       const shareToOther = selIsS ? l.abShare : l.baShare;
       const shareToSel   = selIsS ? l.baShare : l.abShare;
-      html += `<hr style="border:none;border-top:1px solid #444;margin:6px 0">` +
+      html += `<hr style="border:none;border-top:1px solid #ddd;margin:6px 0">` +
         `<span class="num">${selectedNode.id} → ${d.id}: ${toOther === null ? 'suppressed' : fmt(toOther)}` +
         (toOther === null ? '' : ` (${pct(shareToOther)} of ${selectedNode.id}'s movers)`) + `<br>` +
         `${d.id} → ${selectedNode.id}: ${toSel === null ? 'suppressed' : fmt(toSel)}` +
@@ -694,7 +697,7 @@ function showNodeTooltip(event, d) {
           `relative to the estimate.</span>`;
       }
     } else {
-      html += `<hr style="border:none;border-top:1px solid #444;margin:6px 0">` +
+      html += `<hr style="border:none;border-top:1px solid #ddd;margin:6px 0">` +
         `<span class="num">No movers between ${selectedNode.id} and ${d.id} in either direction.</span>`;
     }
   }
@@ -702,8 +705,15 @@ function showNodeTooltip(event, d) {
   moveTooltip(event);
 }
 
+// The tooltip sizes to its content (CSS width: max-content, capped at max-width), so it can be
+// measured, then flips left of the cursor or up when it would run off the window. Without this a
+// state near the right edge squeezed the tooltip into the leftover sliver, one word per line.
 function moveTooltip(event) {
-  tooltip.style('left', (event.pageX + 14) + 'px').style('top', (event.pageY - 32) + 'px');
+  const node = tooltip.node(), w = node.offsetWidth, h = node.offsetHeight, gap = 14;
+  let x = event.clientX + gap, y = event.clientY - 32;
+  if (x + w > window.innerWidth - 4)  x = event.clientX - gap - w;
+  if (y + h > window.innerHeight - 4) y = window.innerHeight - 4 - h;
+  tooltip.style('left', Math.max(4, x) + 'px').style('top', Math.max(4, y) + 'px');
 }
 function hideTooltip() { tooltip.style('display', 'none'); }
 
@@ -850,7 +860,7 @@ function initMap(geo, data) {
     .enter().append('path')
     .attr('d', path)
     .attr('fill', LAND_COLOR)
-    .attr('stroke', '#444')
+    .attr('stroke', STATE_STROKE)
     .attr('stroke-width', 0.5)
     .attr('cursor', 'pointer')
     .on('mouseover', (event, f) => {
@@ -914,7 +924,7 @@ function buildMapLegend() {
     .attr('width', 5).attr('height', 5).attr('patternTransform', 'rotate(45)');
   pat.append('rect').attr('width', 5).attr('height', 5).attr('fill', LAND_COLOR);
   pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 5)
-    .attr('stroke', '#8a8a8a').attr('stroke-width', 1.4);
+    .attr('stroke', '#999').attr('stroke-width', 1.4);
 
   // Margin-of-error dots: a sparse stipple with a transparent ground, laid over the class colour.
   // Dots, not lines, so it cannot be mistaken for the suppressed hatching.
@@ -931,7 +941,7 @@ function buildMapLegend() {
 
   const lg =mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
   lg.append('text').attr('class', 'legend-title')
-    .attr('y', -8).attr('fill', '#bbb').attr('font-size', '10px')
+    .attr('y', -8).attr('fill', '#444').attr('font-size', '10px')
     .attr('font-weight', '600').style('font-family', 'system-ui, sans-serif');
   lg.append('g').attr('class', 'legend-classes');
   positionMapLegend();
@@ -974,10 +984,10 @@ function updateMapLegend(title, cls, label, hasSuppressed = false, hasMoe = fals
   const sel = mapSvg.select('.legend-classes').selectAll('g.legend-class').data(rows);
   const enter = sel.enter().append('g').attr('class', 'legend-class');
   enter.append('rect').attr('width', 12).attr('height', 12)
-    .attr('stroke', '#555').attr('stroke-width', 0.5);
+    .attr('stroke', '#999').attr('stroke-width', 0.5);
   enter.append('text')
     .attr('x', 18).attr('y', 10)
-    .attr('fill', '#999').attr('font-size', '9px')
+    .attr('fill', '#555').attr('font-size', '9px')
     .style('font-family', 'system-ui, sans-serif');
 
   const all = enter.merge(sel);
@@ -1022,10 +1032,10 @@ function updateSizeLegend() {
   let lg = svg.select('g.size-legend');
   if (lg.empty()) {
     lg = svg.append('g').attr('class', 'size-legend').attr('pointer-events', 'none');
-    lg.append('rect').attr('class', 'backing').attr('fill', '#141414').attr('fill-opacity', 0.85)
+    lg.append('rect').attr('class', 'backing').attr('fill', '#fff').attr('fill-opacity', 0.85)
       .attr('rx', 4);
     lg.append('text').attr('class', 'size-title')
-      .attr('fill', '#bbb').attr('font-size', '10px').attr('font-weight', '600')
+      .attr('fill', '#444').attr('font-size', '10px').attr('font-weight', '600')
       .style('font-family', 'system-ui, sans-serif');
     lg.append('g').attr('class', 'size-rows');
   }
@@ -1050,9 +1060,9 @@ function updateSizeLegend() {
   const sel = lg.select('g.size-rows').selectAll('g.size-row').data(rows, d => d.v);
   sel.exit().remove();
   const enter = sel.enter().append('g').attr('class', 'size-row');
-  enter.append('circle').attr('fill', 'none').attr('stroke', '#999').attr('stroke-width', 1);
-  enter.append('line').attr('stroke', '#666').attr('stroke-width', 0.75);
-  enter.append('text').attr('fill', '#999').attr('font-size', '9px')
+  enter.append('circle').attr('fill', 'none').attr('stroke', '#777').attr('stroke-width', 1);
+  enter.append('line').attr('stroke', '#aaa').attr('stroke-width', 0.75);
+  enter.append('text').attr('fill', '#555').attr('font-size', '9px')
     .attr('dominant-baseline', 'middle').style('font-family', 'system-ui, sans-serif');
   const all = enter.merge(sel);
   all.select('circle').attr('cx', cx).attr('cy', d => base - d.r).attr('r', d => d.r);

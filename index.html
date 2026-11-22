@@ -12,16 +12,16 @@
       height: 100vh;
       font-family: system-ui, sans-serif;
       font-size: 13px;
-      background: #141414;
-      color: #ccc;
+      background: #fff;
+      color: #333;
     }
 
     /* ── Controls panel ── */
     #controls {
       width: 240px;
       flex-shrink: 0;
-      background: #1c1c1c;
-      border-right: 1px solid #2e2e2e;
+      background: #fafafa;
+      border-right: 1px solid #e2e2e2;
       display: flex;
       flex-direction: column;
       padding: 16px 14px;
@@ -33,7 +33,7 @@
       font-size: 13px;
       font-weight: 700;
       line-height: 1.35;
-      color: #eee;
+      color: #222;
     }
 
     .control-group { display: flex; flex-direction: column; gap: 6px; }
@@ -48,7 +48,7 @@
     .radio-group { display: flex; flex-direction: column; gap: 5px; }
     .radio-group label {
       display: flex; align-items: center; gap: 7px;
-      font-size: 13px; font-weight: 400; color: #bbb;
+      font-size: 13px; font-weight: 400; color: #333;
       text-transform: none; letter-spacing: 0;
       cursor: pointer;
     }
@@ -57,29 +57,29 @@
     input[type=range] { flex: 1; cursor: pointer; accent-color: #4e79a7; min-width: 0; }
     .slider-val {
       font-variant-numeric: tabular-nums; white-space: nowrap;
-      color: #999; font-size: 12px; min-width: 3.4em; text-align: right;
+      color: #666; font-size: 12px; min-width: 3.4em; text-align: right;
     }
 
-    #year-val { color: #eee; font-weight: 700; font-size: 14px; }
+    #year-val { color: #222; font-weight: 700; font-size: 14px; }
     #play {
-      border: 1px solid #3a3a3a; background: #252525; color: #ccc;
+      border: 1px solid #ccc; background: #fff; color: #444;
       border-radius: 4px; cursor: pointer; padding: 3px 9px;
       font: inherit; font-size: 12px; flex-shrink: 0;
     }
-    #play:hover { background: #303030; color: #eee; }
+    #play:hover { background: #f0f0f0; color: #222; }
 
-    .hint { font-size: 11px; color: #6a6a6a; line-height: 1.5; }
+    .hint { font-size: 11px; color: #888; line-height: 1.5; }
 
     /* ── Stats ── */
     #stats {
       margin-top: auto;
       padding-top: 12px;
-      border-top: 1px solid #2e2e2e;
+      border-top: 1px solid #e2e2e2;
       font-size: 11px;
-      color: #666;
+      color: #777;
       line-height: 1.8;
     }
-    #stats strong { color: #aaa; }
+    #stats strong { color: #333; }
 
     /* ── Legend ── */
     .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
@@ -91,7 +91,7 @@
       position: relative;
       overflow: hidden;
     }
-    #map-container { border-left: 1px solid #2e2e2e; }
+    #map-container { border-left: 1px solid #e2e2e2; }
     #chart, #map { width: 100%; height: 100%; display: block; }
 
     .panel-title {
@@ -105,19 +105,21 @@
     #tooltip {
       position: fixed;
       display: none;
-      background: rgba(0,0,0,.9);
-      color: #eee;
+      background: #fff;
+      color: #222;
       padding: 8px 11px;
       border-radius: 5px;
       font-size: 12px;
       line-height: 1.6;
       pointer-events: none;
       z-index: 10;
+      width: max-content;
       max-width: 250px;
-      border: 1px solid #333;
+      border: 1px solid #ccc;
+      box-shadow: 0 2px 8px rgba(0,0,0,.12);
     }
     #tooltip strong { font-size: 13px; }
-    #tooltip .warn { color: #e8a33d; }
+    #tooltip .warn { color: #a85a00; }
     #tooltip .num { font-variant-numeric: tabular-nums; }
 
     /* ── Loading overlay ── */
@@ -128,11 +130,11 @@
       align-items: center;
       justify-content: center;
       font-size: 15px;
-      color: #666;
-      background: #141414;
+      color: #888;
+      background: #fff;
     }
 
-    hr { border: none; border-top: 1px solid #2e2e2e; }
+    hr { border: none; border-top: 1px solid #e2e2e2; }
   </style>
 </head>
 <body>
@@ -188,9 +190,9 @@
   <div class="control-group">
     <label>
       <input type="checkbox" id="flag-unreliable" checked style="accent-color:#4e79a7">
-      Flag unreliable estimates
+      Flag estimates with high relative uncertainty
     </label>
-    <div class="hint">Dashes links and dots map states where the standard error exceeds two-thirds of the estimate (a 90% margin of error larger than about 1.1 times it).</div>
+    <div class="hint">Dashed links and dotted map fills mark flows whose 90% margin of error is about 1.1× the estimate or larger. Map dots appear only when a state is selected.</div>
   </div>
 
   <hr class="region-legend">
@@ -227,12 +229,12 @@
     position: fixed; right: 0; top: 0; z-index: 50;
     padding: 4px 10px;
     font: 11px/1.35 system-ui, sans-serif;
-    color: #8a8a8a; background: rgba(20,20,20,0.88);
+    color: #777; background: rgba(255,255,255,0.9);
     border-bottom-left-radius: 4px;
     pointer-events: none;
   }
-  .page-credit a { color: #b9b9b9; pointer-events: auto; }
-  .page-credit a:hover { color: #e8e8e8; }
+  .page-credit a { color: #444; pointer-events: auto; }
+  .page-credit a:hover { color: #000; }
 </style>
 <footer class="page-credit">
   Data:
