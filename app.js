@@ -97,7 +97,13 @@ function applyLayoutScale() {
   simulation.force('charge').strength(CHARGE_STRENGTH * k);
 }
 
-svg.call(d3.zoom().scaleExtent([0.2, 10]).on('zoom', e => g.attr('transform', e.transform)));
+// The network zooms geometrically, so a node's on-screen radius is its drawn radius times the
+// zoom factor. The size legend reads the factor and redraws, so it stays true at any zoom.
+let zoomK = 1;
+svg.call(d3.zoom().scaleExtent([0.2, 10]).on('zoom', e => {
+  g.attr('transform', e.transform);
+  if (e.transform.k !== zoomK) { zoomK = e.transform.k; updateSizeLegend(); }
+}));
 svg.on('click.deselect', () => select(null));
 
 let simulation;
@@ -225,12 +231,30 @@ function pairValue(l, selIndex) {
 // ── Node sizing ──────────────────────────────────────────────────────────────
 // Sized on the published state totals rather than on the drawn edges, so the threshold slider
 // changes which edges you see without silently resizing the states.
-function nodeMetric(i) {
-  const n = networkData.nodes[i], y = state.yearIndex;
+function nodeMetric(i, y = state.yearIndex) {
+  const n = networkData.nodes[i];
   if (state.mode === 'out') return n.out[y];
   if (state.mode === 'in')  return n.in[y];
   return n.out[y] + n.in[y];
 }
+
+// One size scale per Direction setting, fixed across ALL years. It used to be rebuilt from each
+// year's largest state, so the same circle meant different numbers in different years -- the
+// yearly maximum of out-migration varies 1.5x (CA 546k in 2009, 841k in 2021) -- and pressing
+// play hid exactly the change it exists to show. Area is proportional to the value (sqrt scale
+// from zero); the floor only keeps the very smallest values visible, and the size legend never
+// shows a reference value small enough to fall under it.
+const R_MAX = 26, R_MIN = 3.5;
+const sizeMaxCache = {};
+function sizeMax() {
+  if (!(state.mode in sizeMaxCache)) {
+    sizeMaxCache[state.mode] = d3.max(networkData.years, (_, y) =>
+      d3.max(networkData.nodes, (_, i) => nodeMetric(i, y))) || 1;
+  }
+  return sizeMaxCache[state.mode];
+}
+function trueRadius(v) { return R_MAX * Math.sqrt(Math.max(0, v) / sizeMax()); }
+function nodeRadius(v) { return Math.max(R_MIN, trueRadius(v)); }
 
 function netMigration(i) {
   const n = networkData.nodes[i], y = state.yearIndex;
@@ -348,9 +372,7 @@ function draw(reheat = 0) {
   allLinks = computeLinks();
   activeLinks = allLinks.filter(l => weightOf(l) > 0 && weightOf(l) >= state.threshold);
 
-  const maxMetric = d3.max(simNodes, d => nodeMetric(d.index)) || 1;
   const maxWeight = d3.max(activeLinks, weightOf) || 1;
-  const rScale = d3.scaleSqrt().domain([0, maxMetric]).range([4, 26]);
   wScale = d3.scalePow().exponent(0.5).domain([0, maxWeight]).range([0.4, 8]).clamp(true);
 
   const simLinks = activeLinks.map(l => ({ ...l, source: l.s, target: l.t }));
@@ -391,11 +413,12 @@ function draw(reheat = 0) {
     .text(d => d.id);
 
   const nodeAll = nodeEnter.merge(nodeSel);
-  simNodes.forEach(d => { d.r = rScale(nodeMetric(d.index)); });   // ticked() stops arrows here
+  simNodes.forEach(d => { d.r = nodeRadius(nodeMetric(d.index)); });   // ticked() stops arrows here
   nodeAll.select('circle').attr('r', d => d.r);
-  nodeAll.select('text').attr('dy', d => rScale(nodeMetric(d.index)) + 3);
+  nodeAll.select('text').attr('dy', d => d.r + 3);
 
-  simulation.force('collision', d3.forceCollide().radius(d => rScale(nodeMetric(d.index)) + 3));
+  simulation.force('collision', d3.forceCollide().radius(d => d.r + 3));
+  updateSizeLegend();
   // Under the share metric the link force pulls proportionally to the share, so a state sits
   // near the states it actually sends its movers to rather than near the biggest states.
   simulation.force('link')
@@ -852,6 +875,7 @@ function initMap(geo, data) {
     // whole states clipped against the panel edge. Re-aim it and let the graph walk over.
     const { w, h } = dims();
     simulation.force('center', d3.forceCenter(w / 2, h / 2));
+    updateSizeLegend();                            // anchored to the panel's bottom edge
     applyLayoutScale();
     simulation.alpha(0.3).restart();
   }
@@ -947,6 +971,89 @@ function updateMapLegend(title, cls, label, hasSuppressed = false, hasMoe = fals
   all.select('rect').attr('fill', d => d.color);
   all.select('text').text(d => d.text);
   sel.exit().remove();
+}
+
+// ── Size legend (network panel) ──────────────────────────────────────────────
+// Nested circles, bottom-aligned, drawn in screen space outside the zoomed group and re-drawn at
+// the current zoom factor, so each legend circle is exactly the size a node with that value has
+// on screen right now. Reference values come from a 1-2-5 ladder: the largest that fits both the
+// data and the corner (zooming in swaps in smaller references rather than growing the legend
+// past SIZE_LEGEND_R px), then roughly a quarter and a twentieth of it. A reference value small
+// enough to fall under the R_MIN floor is never shown, since its circle would overstate it.
+const SIZE_LEGEND_R = 34, SIZE_LEGEND_PAD = 14, SIZE_LABEL_GAP = 11;
+const LADDER = d3.range(3, 8).flatMap(e => [1, 2, 5].map(m => m * 10 ** e));   // 1k .. 50M
+const sizeFmt = d3.format('~s');
+
+function sizeLegendTitle() {
+  return state.mode === 'out' ? 'Node size: movers leaving'
+       : state.mode === 'in'  ? 'Node size: movers arriving'
+       : 'Node size: movers in + out';
+}
+
+function sizeReferences() {
+  const fit = sizeMax() * (SIZE_LEGEND_R / (R_MAX * zoomK)) ** 2;
+  const below = cap => d3.max(LADDER.filter(v => v <= cap));
+  const big = below(Math.min(sizeMax(), fit));
+  if (!big) return [];
+  const honest = v => v && trueRadius(v) >= R_MIN;
+  const refs = [...new Set([big, below(big / 4), below(big / 20)])]
+    .filter(v => honest(v) && trueRadius(v) * zoomK >= 1.5);
+  // Zoomed far in, everything that fits the corner is under the floor. Show the smallest honest
+  // reference anyway, larger than the usual cap, rather than an empty legend.
+  return refs.length ? refs : [LADDER.find(honest)].filter(Boolean);
+}
+
+function updateSizeLegend() {
+  if (!networkData) return;
+  let lg = svg.select('g.size-legend');
+  if (lg.empty()) {
+    lg = svg.append('g').attr('class', 'size-legend').attr('pointer-events', 'none');
+    lg.append('rect').attr('class', 'backing').attr('fill', '#141414').attr('fill-opacity', 0.85)
+      .attr('rx', 4);
+    lg.append('text').attr('class', 'size-title')
+      .attr('fill', '#bbb').attr('font-size', '10px').attr('font-weight', '600')
+      .style('font-family', 'system-ui, sans-serif');
+    lg.append('g').attr('class', 'size-rows');
+  }
+
+  const refs = sizeReferences();                       // largest first
+  const radii = refs.map(v => trueRadius(v) * zoomK);
+  const R = radii[0] || 0;
+  const { h } = dims();
+  const cx = SIZE_LEGEND_PAD + R, base = h - SIZE_LEGEND_PAD;
+  const labelX = cx + R + 10;
+
+  // Label each circle at its top; push a label down when circles are close enough in size that
+  // their labels would collide.
+  let lastY = -Infinity;
+  const rows = refs.map((v, i) => {
+    const top = base - 2 * radii[i];
+    const y = Math.max(top, lastY + SIZE_LABEL_GAP);
+    lastY = y;
+    return { v, r: radii[i], top, y };
+  });
+
+  const sel = lg.select('g.size-rows').selectAll('g.size-row').data(rows, d => d.v);
+  sel.exit().remove();
+  const enter = sel.enter().append('g').attr('class', 'size-row');
+  enter.append('circle').attr('fill', 'none').attr('stroke', '#999').attr('stroke-width', 1);
+  enter.append('line').attr('stroke', '#666').attr('stroke-width', 0.75);
+  enter.append('text').attr('fill', '#999').attr('font-size', '9px')
+    .attr('dominant-baseline', 'middle').style('font-family', 'system-ui, sans-serif');
+  const all = enter.merge(sel);
+  all.select('circle').attr('cx', cx).attr('cy', d => base - d.r).attr('r', d => d.r);
+  all.select('line').attr('x1', cx).attr('y1', d => d.top).attr('x2', labelX - 3).attr('y2', d => d.y);
+  all.select('text').attr('x', labelX).attr('y', d => d.y).text(d => sizeFmt(d.v));
+
+  const titleY = (rows.length ? Math.min(base - 2 * R, rows[0].y) : base) - 12;
+  lg.select('text.size-title').attr('x', SIZE_LEGEND_PAD).attr('y', titleY).text(sizeLegendTitle());
+
+  // Backing sized to what was drawn, so nodes passing underneath do not tangle with the labels.
+  const box = lg.select('g.size-rows').node().getBBox();
+  const tBox = lg.select('text.size-title').node().getBBox();
+  const x0 = Math.min(box.x || Infinity, tBox.x) - 6, y0 = tBox.y - 5;
+  const x1 = Math.max(box.x + box.width, tBox.x + tBox.width) + 6, y1 = base + 6;
+  lg.select('rect.backing').attr('x', x0).attr('y', y0).attr('width', x1 - x0).attr('height', y1 - y0);
 }
 
 // ── Legend ───────────────────────────────────────────────────────────────────

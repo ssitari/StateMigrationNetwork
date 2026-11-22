@@ -46,6 +46,15 @@ comparison.
 - **No selection** — the map shows **net migration** (arrivals minus departures): blue states
   gained population from other states that year, red states lost it. Network nodes are colored by
   Census region and sized by total interstate movement.
+- **Node size** — circle **area** is proportional to the number of movers, on **one scale fixed
+  across all years** for each Direction setting. Sizes are comparable through time: when you press
+  play, a state that grows really does grow. (The scale used to be rebuilt from each year's
+  largest state. The yearly maximum of out-migration varies 1.5×, so the same circle meant
+  different numbers in different years.) A 3.5 px floor keeps the very smallest values visible.
+  The **size legend** in the network panel's corner shows nested reference circles, and is redrawn
+  at the current zoom, so each circle is exactly the size of a node with that value on screen.
+  Zooming in swaps in smaller reference values rather than letting the legend outgrow its corner.
+  It never shows a value small enough to fall under the floor.
 - **A state selected** — the map shows that state's relationships, and the network dims everything
   not connected to it. The selected state is drawn in neutral grey with a white outline in both
   panels, the other nodes take the map's colours, and the region legend is hidden because no
